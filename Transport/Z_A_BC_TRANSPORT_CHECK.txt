@@ -1,0 +1,1636 @@
+*&---------------------------------------------------------------------*
+*& Report  Z_A_BC_TRANSPORT_CHECK
+*&
+*&---------------------------------------------------------------------*
+*&
+*&
+*&---------------------------------------------------------------------*
+REPORT z_a_bc_transport_check.
+
+TABLES : e070, ztbrequest.
+
+***==================================================================***
+**                         SELECTION-SCREEN                           **
+***==================================================================***
+
+SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE text-tb1.
+" -----------------------------------------------------------
+" Critères de sélection
+" -----------------------------------------------------------
+
+" Numéro de Demande
+PARAMETERS : p_req TYPE ztbrequest-zedreqnb.
+
+" Liste OT
+SELECT-OPTIONS : s_trkorr FOR e070-trkorr NO INTERVALS.
+
+" Système Cible
+PARAMETERS : p_sysid TYPE ztbdestrfc-zedtargsys.
+
+SELECTION-SCREEN END OF BLOCK b1.
+
+SELECTION-SCREEN BEGIN OF BLOCK b2 WITH FRAME TITLE text-tb2.
+" -----------------------------------------------------------
+" Options
+" -----------------------------------------------------------
+
+" Proposer Ordre de séquence
+PARAMETERS : p_prop AS CHECKBOX MODIF ID pro. " DEFAULT 'X'.                "#EC NOTEXT
+
+SELECTION-SCREEN BEGIN OF BLOCK b3 WITH FRAME TITLE text-tb3.
+
+" Suggérer OT plus récent
+PARAMETERS : p_irecen AS CHECKBOX.                          "#EC NOTEXT
+
+" Contrôle toutes les Versions
+PARAMETERS : p_ioldv AS CHECKBOX.
+
+" Réimport
+PARAMETERS : p_reimp AS CHECKBOX.
+
+SELECTION-SCREEN END OF BLOCK b3.
+
+" Liste OT volontairement exclus
+SELECT-OPTIONS : s_exc_ot FOR e070-trkorr NO INTERVALS.
+
+SELECTION-SCREEN END OF BLOCK b2.
+
+*----------------------------------------------------------------------*
+*       CLASS LCL_main DEFINIION
+*----------------------------------------------------------------------*
+*
+*----------------------------------------------------------------------*
+CLASS lcl_main DEFINITION FINAL CREATE PRIVATE.
+
+*-- Publique
+  PUBLIC SECTION.
+
+***------------------------------------------------------------------***
+**                              TYPES                                 **
+***------------------------------------------------------------------***
+
+*   Déclaration de type
+
+***------------------------------------------------------------------***
+**                           MÉTHODES                                 **
+***------------------------------------------------------------------***
+
+*	Déclaration de méthodes
+
+    " Génération instance de la Classe
+    CLASS-METHODS factory
+      RETURNING VALUE(ro_instance) TYPE REF TO lcl_main.
+
+    " Modification écran de sélectio
+    METHODS at_selection_screen_ouput.
+
+    " Système Cible - Aide à la recherche
+    METHODS sysid_value_help.
+
+    " Traitement Principal
+    METHODS start_of_selection
+      RETURNING VALUE(rv_subrc) TYPE sy-subrc.
+
+***------------------------------------------------------------------***
+**                            ATTRIBUTS                               **
+***------------------------------------------------------------------***
+
+*	Déclaration d'attributs
+
+*-- Privée
+  PRIVATE SECTION.
+
+***------------------------------------------------------------------***
+**                              TYPES                                 **
+***------------------------------------------------------------------***
+
+*   Déclaration de type
+
+    TYPES :
+      BEGIN OF ts_sel_criteria_sel,
+        or_trkorr  LIKE REF TO s_trkorr[],
+        ov_request LIKE REF TO p_req,
+      END OF   ts_sel_criteria_sel.
+
+    TYPES :
+      BEGIN OF ts_sel_criteria_option,
+        ov_reimport           LIKE REF TO p_reimp,
+        ov_target_sys         LIKE REF TO p_sysid,
+        ov_proposal_seq       LIKE REF TO p_prop,
+        ov_ignore_recent      LIKE REF TO p_irecen,
+        or_excluded_trkorr    LIKE REF TO s_exc_ot[],
+        ov_ignore_old_version LIKE REF TO p_ioldv,
+      END OF   ts_sel_criteria_option.
+
+    TYPES :
+      BEGIN OF ts_selection_criteria,
+        criteria TYPE lcl_main=>ts_sel_criteria_sel,
+        options  TYPE lcl_main=>ts_sel_criteria_option,
+      END OF   ts_selection_criteria.
+
+
+    TYPES :
+      BEGIN OF ts_sequence,
+        trkorr_main    TYPE e070-trkorr,
+        trkorr_task    TYPE e070-trkorr,
+        trfunction     TYPE e070-trfunction,
+        sequence_order TYPE ztborderseq-zedreqpos,
+      END OF   ts_sequence.
+
+    TYPES : tt_sequence TYPE STANDARD TABLE OF ts_sequence
+                    WITH NON-UNIQUE KEY primary_key COMPONENTS trkorr_main
+                    WITH NON-UNIQUE SORTED KEY ot_key COMPONENTS trkorr_main
+                    WITH NON-UNIQUE SORTED KEY task_key COMPONENTS trkorr_task.
+    TYPES :
+      BEGIN OF ts_e071,
+        trkorr   TYPE e071-trkorr,
+        pgmid    TYPE e071-pgmid,
+        object   TYPE e071-object,
+        obj_name TYPE e071-obj_name,
+      END OF   ts_e071.
+
+    TYPES : tt_e071 TYPE STANDARD TABLE OF ts_e071
+                    WITH NON-UNIQUE KEY primary_key COMPONENTS trkorr pgmid object obj_name.
+
+    TYPES :
+      BEGIN OF ts_vrsd,
+        objtype TYPE vrsd-objtype,
+        objname TYPE vrsd-objname,
+        versno  TYPE vrsd-versno,
+        korrnum TYPE vrsd-korrnum,
+      END OF   ts_vrsd.
+
+    TYPES : tt_vrsd TYPE STANDARD TABLE OF ts_vrsd
+                    WITH NON-UNIQUE KEY primary_key COMPONENTS objtype objname versno
+                    WITH NON-UNIQUE SORTED KEY object_key COMPONENTS objtype objname
+                    WITH NON-UNIQUE SORTED KEY ot_key COMPONENTS korrnum.
+
+    TYPES :
+      BEGIN OF ts_result,
+        type                 TYPE sy-msgty,
+        icon                 TYPE icon-id,
+        trkorr               TYPE e070-trkorr,
+        sequence_order_input TYPE ztborderseq-zedreqpos,
+        sequence_order_prop  TYPE ztborderseq-zedreqpos,
+        objtype              TYPE vrsd-objtype,
+        objname              TYPE vrsd-objname,
+        versno               TYPE vrsd-versno,
+        message              TYPE string,
+        import_date          TYPE sy-datum,
+        import_time          TYPE sy-uzeit,
+        use_sequence_order   TYPE xsdboolean,
+      END OF   ts_result.
+
+    TYPES : tt_result TYPE STANDARD TABLE OF ts_result
+                    WITH NON-UNIQUE KEY primary_key COMPONENTS trkorr objtype objname
+                    WITH NON-UNIQUE SORTED KEY object_key_vers COMPONENTS objtype objname versno.
+
+    TYPES :
+      BEGIN OF ts_output_length,
+        message TYPE lvc_outlen,
+        objname TYPE lvc_outlen,
+      END OF   ts_output_length.
+
+    TYPES :
+      BEGIN OF ts_output_format,
+        length TYPE lcl_main=>ts_output_length,
+      END OF   ts_output_format.
+
+    TYPES :
+      BEGIN OF ts_result_check,
+        error           TYPE xsdboolean,
+        has_more_recent TYPE xsdboolean,
+        t_result        TYPE lcl_main=>tt_result,
+      END OF   ts_result_check.
+
+    TYPES :
+      BEGIN OF ts_sequence_data,
+        t_vrsd               TYPE lcl_main=>tt_vrsd,
+        t_sequence_input     TYPE lcl_main=>tt_sequence,
+        t_last_version_input TYPE lcl_main=>tt_vrsd,
+      END OF   ts_sequence_data.
+
+    TYPES :
+      BEGIN OF ts_work_area,
+        sys_previous    TYPE ztbdestrfc-zedtargsys,
+        s_sequence_data TYPE lcl_main=>ts_sequence_data,
+        s_output_format TYPE lcl_main=>ts_output_format,
+        s_result_check  TYPE lcl_main=>ts_result_check,
+      END OF   ts_work_area.
+
+***------------------------------------------------------------------***
+**                           MÉTHODES                                 **
+***------------------------------------------------------------------***
+
+*	Déclaration de méthodes
+
+    " Constructeur
+    METHODS constructor.
+
+    " Saisie - Contrôle
+    METHODS criteria_check
+      RETURNING VALUE(rv_subrc) TYPE sy-subrc.
+
+    " Données - Récupération
+    METHODS data_get
+      RETURNING VALUE(rv_subrc) TYPE sy-subrc.
+
+    " Séquence - Contrôle
+    METHODS sequence_check
+      RETURNING VALUE(rv_subrc) TYPE sy-subrc.
+
+    " Initialisation de la séquence
+    METHODS sequence_order_set.
+
+    " Affichage message
+    METHODS message_set.
+
+    " Résultat - Affichage
+    METHODS result_display
+      RETURNING VALUE(rv_subrc) TYPE sy-subrc.
+
+    " Résultat - Ajout
+    METHODS result_add
+      IMPORTING
+        !iv_trkorr              TYPE e070-trkorr
+        !iv_objname             TYPE vrsd-objname OPTIONAL
+        !iv_objtype             TYPE vrsd-objtype OPTIONAL
+        !iv_versno              TYPE vrsd-versno OPTIONAL
+        !iv_sequence_order_prop TYPE numeric OPTIONAL
+        VALUE(iv_msgty)         TYPE sy-msgty DEFAULT if_msg_output=>msgtype_error
+        !iv_msgid               TYPE sy-msgid DEFAULT 'ZBC' "#EC NOTEXT
+        !iv_msgno               TYPE sy-msgno OPTIONAL
+        !iv_msgv1               TYPE sy-msgv1 OPTIONAL
+        !iv_msgv2               TYPE sy-msgv2 OPTIONAL
+        !iv_msgv3               TYPE sy-msgv3 OPTIONAL
+        !iv_msgv4               TYPE sy-msgv4 OPTIONAL.
+
+    " Récupération numéro OT
+    METHODS _main_ot_get
+      IMPORTING
+                !iv_trkorr       TYPE e070-trkorr
+      RETURNING VALUE(rv_trkorr) TYPE e070-trkorr.
+
+***------------------------------------------------------------------***
+**                            ATTRIBUTS                               **
+***------------------------------------------------------------------***
+
+*	Déclaration d'attributs
+
+    DATA : ms_work_area TYPE lcl_main=>ts_work_area.
+    DATA : ms_selection_criteria TYPE lcl_main=>ts_selection_criteria.
+    CLASS-DATA : mc_activate_proposal TYPE xsdboolean VALUE abap_false.
+
+ENDCLASS.             "lcl_main DEFINITION
+
+*----------------------------------------------------------------------*
+*       CLASS LCL_main IMPLEMENTATION
+*----------------------------------------------------------------------*
+*
+*----------------------------------------------------------------------*
+CLASS lcl_main IMPLEMENTATION.
+
+  METHOD at_selection_screen_ouput.
+
+***==================================================================***
+**                           TRAITEMENT                               **
+***==================================================================***
+
+    " -----------------------------------------------------------
+    " Modification écran de sélection
+    " -----------------------------------------------------------
+
+    LOOP AT SCREEN INTO DATA(ls_screen).
+
+      " Suivant l'élément
+      CASE ls_screen-group1.
+
+        WHEN 'PRO'.                                         "#EC NOTEXT
+          " Proposition
+          IF lcl_main=>mc_activate_proposal EQ abap_true.
+            ls_screen-input  = 1.
+
+          ELSE.
+            ls_screen-input  = 0.
+            CLEAR : me->ms_selection_criteria-options-ov_proposal_seq->*.
+
+          ENDIF.
+
+        WHEN OTHERS.
+          " Autres
+          ""  --> Passe à l'itération suivante
+          CONTINUE.
+
+      ENDCASE.
+
+      " Modification de l'écran
+      MODIFY screen FROM ls_screen.
+
+    ENDLOOP.
+
+  ENDMETHOD.
+
+  METHOD factory.
+
+***==================================================================***
+**                           TRAITEMENT                               **
+***==================================================================***
+
+    " -----------------------------------------------------------
+    " Génération Instance
+    " -----------------------------------------------------------
+
+    " Génération instance
+    ro_instance = NEW #( ).
+
+  ENDMETHOD.
+
+  METHOD constructor.
+
+***==================================================================***
+**                           TRAITEMENT                               **
+***==================================================================***
+
+    " -----------------------------------------------------------
+    " Initialisation attributs
+    " -----------------------------------------------------------
+
+    " Critère de sélection - Critères
+    me->ms_selection_criteria-criteria-ov_request = REF #( p_req ).
+    me->ms_selection_criteria-criteria-or_trkorr  = REF #( s_trkorr[] ).
+
+    " Critère de sélection - Options
+    me->ms_selection_criteria-options-ov_reimport           = REF #( p_reimp ).
+    me->ms_selection_criteria-options-ov_target_sys         = REF #( p_sysid ).
+    me->ms_selection_criteria-options-ov_proposal_seq       = REF #( p_prop ).
+    me->ms_selection_criteria-options-ov_ignore_recent      = REF #( p_irecen ).
+    me->ms_selection_criteria-options-or_excluded_trkorr    = REF #( s_exc_ot[] ).
+    me->ms_selection_criteria-options-ov_ignore_old_version = REF #( p_ioldv ).
+
+  ENDMETHOD.
+
+  METHOD sysid_value_help.
+
+***------------------------------------------------------------------***
+**                             TABLES                                 **
+***------------------------------------------------------------------***
+    DATA :
+      lt_fields   TYPE wlf_tt_help_value,
+      lt_valuetab TYPE file_buffer_table.
+
+***==================================================================***
+**                           TRAITEMENT                               **
+***==================================================================***
+
+    " -----------------------------------------------------------
+    " Aide à la Recherche Système Cible
+    " -----------------------------------------------------------
+
+    lt_fields = VALUE #(
+      (
+        tabname   = 'ZTBDESTRFC'                            "#EC NOTEXT
+        fieldname = 'ZEDTARGSYS'                            "#EC NOTEXT
+        selectflag = abap_true
+      )
+    ).
+
+    " Récupération Liste des Systèmes Cibles
+    SELECT DISTINCT ( zedtargsys ) FROM ztbdestrfc
+     WHERE loekz EQ @abap_false ORDER BY zedtargsys
+      INTO TABLE @lt_valuetab.
+
+    " Affiche PopUp Sélection
+    CALL FUNCTION 'HELP_VALUES_GET_WITH_TABLE'
+      EXPORTING
+        display                       = abap_false
+        fieldname                     = 'ZEDTARSYS'  "#EC NOTEXT
+        tabname                       = 'ZTBDESTRFC' "#EC NOTEXT
+        show_all_values_at_first_time = abap_true
+      IMPORTING
+        select_value                  = p_sysid
+      TABLES
+        fields                        = lt_fields
+        valuetab                      = lt_valuetab
+      EXCEPTIONS
+        field_not_in_ddic             = 1
+        more_then_one_selectfield     = 2
+        no_selectfield                = 3
+        OTHERS                        = 4.
+    IF sy-subrc NE 0.
+      " Erreur sélection
+      CLEAR : p_sysid.
+
+    ENDIF.
+
+  ENDMETHOD.
+
+  METHOD criteria_check.
+
+***==================================================================***
+**                           TRAITEMENT                               **
+***==================================================================***
+
+    " -----------------------------------------------------------
+    " Contrôle saisie
+    " -----------------------------------------------------------
+
+    IF  me->ms_selection_criteria-criteria-ov_request->*  IS INITIAL
+    AND me->ms_selection_criteria-criteria-or_trkorr->*[] IS INITIAL.
+      " Aucun des deux saisies
+      ""  --> Arrêt du traitement
+      rv_subrc = 1.
+      MESSAGE s665(ez) DISPLAY LIKE if_msg_output=>msgtype_error.
+      RETURN.
+
+    ELSEIF NOT me->ms_selection_criteria-criteria-ov_request->*  IS INITIAL
+       AND NOT me->ms_selection_criteria-criteria-or_trkorr->*[] IS INITIAL.
+      " Les deux ...
+      ""  --> Arrêt du traitement
+      rv_subrc = 2.
+      MESSAGE s538(m3) DISPLAY LIKE if_msg_output=>msgtype_error.
+      RETURN.
+
+    ELSEIF NOT me->ms_selection_criteria-criteria-or_trkorr->*[] IS INITIAL.
+      " Liste d'OT
+      IF p_sysid IS INITIAL.
+        " Système cible vide
+        ""  --> Arrêt du traitement
+        rv_subrc = 3.
+        MESSAGE s009(zhardcode) DISPLAY LIKE if_msg_output=>msgtype_error.
+        RETURN.
+
+      ENDIF.
+
+      ""  --> Contrôle cohérence saisie
+      READ TABLE me->ms_selection_criteria-criteria-or_trkorr->*
+        WITH KEY option = if_trba_selection_c=>gc_option_cp TRANSPORTING NO FIELDS.
+      IF sy-subrc EQ 0.
+        " Recherche sur Pattern non autorisée
+        ""  --> Arrêt du traitement
+        rv_subrc = 4.
+        MESSAGE s129(fb) DISPLAY LIKE if_msg_output=>msgtype_error.
+        RETURN.
+
+      ENDIF.
+
+    ELSEIF NOT me->ms_selection_criteria-criteria-ov_request IS INITIAL.
+      " Demande de Transport
+      ""  --> Récupération système cible
+      SELECT SINGLE zedtargsys FROM ztbrequest
+              WHERE zedreqnb EQ @me->ms_selection_criteria-criteria-ov_request->*
+               INTO @me->ms_selection_criteria-options-ov_target_sys->*.
+      IF sy-subrc NE 0.
+        " Aucun OT sélectionné
+        ""  --> Arrêt du traitement
+        rv_subrc = 6.
+        MESSAGE s172(l3) DISPLAY LIKE if_msg_output=>msgtype_error.
+        RETURN.
+
+      ENDIF.
+
+      ""  --> Récupération liste des OTs et des Tâches de la Demande
+      SELECT zedtrpord, zedreqpos
+        FROM ztborderseq
+       WHERE zedreqnb EQ @me->ms_selection_criteria-criteria-ov_request->*
+       ORDER BY zedreqpos
+        INTO TABLE @DATA(lt_ztborderseq).
+      IF sy-subrc EQ 0.
+        " Au moins une correspondance
+        ""  --> Initialisation range des OTs dans l'Ordre de la séquence
+        LOOP AT lt_ztborderseq ASSIGNING FIELD-SYMBOL(<lfs_s_orderseq>).
+
+          APPEND VALUE #(
+            sign   = if_trba_selection_c=>gc_sign_incl
+            option = if_trba_selection_c=>gc_option_eq
+            low    = <lfs_s_orderseq>-zedtrpord
+          ) TO me->ms_selection_criteria-criteria-or_trkorr->*.
+
+        ENDLOOP.
+
+      ENDIF.
+
+    ENDIF.
+
+    " -----------------------------------------------------------
+    " Récupération système cible précédent
+    " -----------------------------------------------------------
+
+    " Récupération du système cible précédent
+    SELECT SINGLE zedsoursys FROM ztbdestrfc
+            WHERE zedtargsys   EQ @me->ms_selection_criteria-options-ov_target_sys->*
+              AND loekz        EQ @space
+             INTO @me->ms_work_area-sys_previous.
+    IF sy-subrc NE 0.
+      " Aucun système précédent
+      ""  --> Système précédent = Système cible
+      me->ms_work_area-sys_previous = me->ms_selection_criteria-options-ov_target_sys->*.
+
+    ENDIF.
+
+    IF me->ms_selection_criteria-options-ov_target_sys->* EQ 'PE1'. "#EC NOTEXT
+      " -----------------------------------------------------------
+      " Contrôle Transport en Recette des OTs
+      " -----------------------------------------------------------
+
+      LOOP AT me->ms_selection_criteria-criteria-or_trkorr->*
+        ASSIGNING FIELD-SYMBOL(<lfs_s_trkorr>).
+
+        IF zcl_transport_request=>transport_request_check_import(
+            iv_trkorr    = <lfs_s_trkorr>-low
+            iv_tarsystem = me->ms_work_area-sys_previous
+        ) NE abap_true.
+          " OT non transportée dans le précédent système cible
+          ""  --> Ajout erreur
+          me->result_add(
+            iv_trkorr = <lfs_s_trkorr>-low
+            iv_msgno  = 024
+            iv_msgv1  = CONV #( me->ms_work_area-sys_previous )
+          ).
+
+*          ""  --> Code retour en erreur
+*          rv_subrc = 8.
+
+        ELSEIF  zcl_transport_request=>transport_request_check_import(
+            iv_trkorr    = <lfs_s_trkorr>-low
+            iv_tarsystem = me->ms_selection_criteria-options-ov_target_sys->*
+        ) EQ abap_true.
+          " Cas Réimport
+          ""  --> Force contrôle Réimport
+          me->ms_selection_criteria-options-ov_reimport->* = abap_true.
+
+        ENDIF.
+
+      ENDLOOP.
+
+    ENDIF.
+
+  ENDMETHOD.
+
+  METHOD data_get.
+***------------------------------------------------------------------***
+**                             RANGES                                 **
+***------------------------------------------------------------------***
+    DATA :
+          lr_trkorr TYPE ucon_tr_req_range.
+
+***==================================================================***
+**                           TRAITEMENT                               **
+***==================================================================***
+
+    " -----------------------------------------------------------
+    " Récupération des Tâches composant ces OTs
+    " -----------------------------------------------------------
+
+    " Récupération liste des Tâches de la Demande
+    SELECT
+      CASE WHEN main~strkorr EQ @space THEN main~trkorr ELSE main~strkorr END AS trkorr_main,
+      CASE WHEN task~strkorr IS NULL THEN main~trkorr ELSE task~trkorr END AS trkorr_task,
+      main~trfunction
+      FROM e070 AS main
+      LEFT OUTER JOIN e070 AS task ON main~strkorr EQ main~trkorr
+     WHERE main~trkorr  IN @me->ms_selection_criteria-criteria-or_trkorr->*
+        OR main~strkorr IN @me->ms_selection_criteria-criteria-or_trkorr->*
+      INTO TABLE @me->ms_work_area-s_sequence_data-t_sequence_input.
+    IF sy-subrc NE 0.
+      " Aucun OT sélectionné
+      ""  --> Arrêt du traitement
+      MESSAGE s000(zcunity) WITH text-e02 space space space DISPLAY LIKE if_msg_output=>msgtype_error.
+      RETURN.
+
+    ENDIF.
+
+    " Initialisation numéro de séquence
+    LOOP AT me->ms_work_area-s_sequence_data-t_sequence_input
+      ASSIGNING FIELD-SYMBOL(<lfs_s_sequence>).
+
+      " Récupération Ordre de saisie
+      READ TABLE me->ms_selection_criteria-criteria-or_trkorr->*
+        WITH KEY low = <lfs_s_sequence>-trkorr_main TRANSPORTING NO FIELDS.
+      IF sy-subrc EQ 0.
+        " Correspondance
+        ""  --> Initialisation position de l'Ordre
+        <lfs_s_sequence>-sequence_order = sy-tabix.
+
+      ENDIF.
+
+      " Extraction liste OT
+      APPEND VALUE #(
+        low    = <lfs_s_sequence>-trkorr_main
+        sign   = if_trba_selection_c=>gc_sign_incl
+        option = if_trba_selection_c=>gc_option_eq
+      ) TO lr_trkorr.
+
+    ENDLOOP.
+
+    " -----------------------------------------------------------
+    " Récupération des plus hautes Versions des Objets
+    " -----------------------------------------------------------
+
+    SELECT objtype, objname, MAX( versno )
+      FROM vrsd WHERE korrnum IN @lr_trkorr[]
+             GROUP BY objtype, objname
+           INTO TABLE @me->ms_work_area-s_sequence_data-t_last_version_input.
+
+    " -----------------------------------------------------------
+    " Récupération des Versions des Objets contenus dans les OTs
+    " -----------------------------------------------------------
+
+    " Récupération des Versions des Objets
+    SELECT objtype, objname, versno, korrnum
+      FROM vrsd
+       FOR ALL ENTRIES IN @me->ms_work_area-s_sequence_data-t_sequence_input
+     WHERE korrnum     EQ @me->ms_work_area-s_sequence_data-t_sequence_input-trkorr_task
+      INTO TABLE @me->ms_work_area-s_sequence_data-t_vrsd.
+    IF sy-subrc EQ 0.
+      SELECT objtype, objname, versno, korrnum
+        FROM vrsd
+         FOR ALL ENTRIES IN @me->ms_work_area-s_sequence_data-t_vrsd
+       WHERE objtype EQ @me->ms_work_area-s_sequence_data-t_vrsd-objtype
+         AND objname EQ @me->ms_work_area-s_sequence_data-t_vrsd-objname
+         AND korrnum NE @space
+        INTO TABLE @me->ms_work_area-s_sequence_data-t_vrsd.
+
+    ENDIF.
+
+  ENDMETHOD.
+
+  METHOD sequence_check.
+
+***------------------------------------------------------------------***
+**                             TABLES                                 **
+***------------------------------------------------------------------***
+    DATA :
+        lt_vrsd_st TYPE lcl_main=>tt_vrsd.
+***------------------------------------------------------------------***
+**                            STRUCTURE                               **
+***------------------------------------------------------------------***
+    DATA :
+      ls_cofile_header TYPE tstrfcofih.
+
+***------------------------------------------------------------------***
+**                            VARIABLES                               **
+***------------------------------------------------------------------***
+    DATA :
+      lv_count             TYPE int4,
+      lv_in_list           TYPE xsdboolean,
+      lv_strkorr           TYPE e070-trkorr,
+      lv_imported_sys      TYPE xsdboolean,
+      lv_imported_prev_sys TYPE xsdboolean.
+
+***==================================================================***
+**                           TRAITEMENT                               **
+***==================================================================***
+
+    " -----------------------------------------------------------
+    " Contrôle cohérence de Transport
+    " -----------------------------------------------------------
+
+    " Tri par Position
+    SORT me->ms_work_area-s_sequence_data-t_sequence_input BY sequence_order.
+
+    " Conserve la Version la plus récente de l'Objet
+    lt_vrsd_st[] = me->ms_work_area-s_sequence_data-t_vrsd[].
+    SORT lt_vrsd_st BY objtype objname versno.
+    DELETE ADJACENT DUPLICATES FROM lt_vrsd_st COMPARING objtype objname.
+
+    " Tri par Version décroissante
+    SORT me->ms_work_area-s_sequence_data-t_vrsd BY objtype objname versno DESCENDING.
+    DELETE me->ms_work_area-s_sequence_data-t_vrsd WHERE versno IS INITIAL.
+
+    " Contrôle chaque Objet
+    LOOP AT lt_vrsd_st ASSIGNING FIELD-SYMBOL(<lfs_s_vrsd_st>).
+
+      CLEAR : lv_in_list.
+
+      IF NOT me->ms_selection_criteria-options-or_excluded_trkorr->* IS INITIAL
+         AND <lfs_s_vrsd_st>-korrnum IN me->ms_selection_criteria-options-or_excluded_trkorr->*.
+        " OT dans la liste à Exclure
+        ""  --> Passe à l'itération suivante
+        CONTINUE.
+
+      ENDIF.
+
+      " Récupération de la Version de l'Objet le plus récent dans la liste
+      READ TABLE me->ms_work_area-s_sequence_data-t_last_version_input
+        WITH KEY object_key COMPONENTS objtype = <lfs_s_vrsd_st>-objtype
+                                       objname = <lfs_s_vrsd_st>-objname
+                             ASSIGNING FIELD-SYMBOL(<lfs_s_last_version>).
+
+      " Recherche si l'OT est à transporter
+      READ TABLE me->ms_work_area-s_sequence_data-t_sequence_input
+        WITH KEY task_key COMPONENTS trkorr_task = <lfs_s_vrsd_st>-korrnum
+                        TRANSPORTING NO FIELDS.
+      lv_in_list = xsdbool( sy-subrc EQ 0 ).
+
+      IF me->ms_selection_criteria-options-ov_ignore_recent->* EQ abap_false.
+        " Contrôle version plus récente
+        IF lv_in_list EQ abap_false.
+          " OT non présent dans la liste
+          ""  --> Averti l'utilisateur que celle-ci n'est pas transportée
+          me->result_add(
+            iv_trkorr  = <lfs_s_vrsd_st>-korrnum
+            iv_objname = <lfs_s_vrsd_st>-objname
+            iv_objtype = <lfs_s_vrsd_st>-objtype
+            iv_versno  = 9999
+            iv_msgno   = 022
+            iv_msgty   = if_msg_output=>msgtype_warning
+          ).
+
+          ""  --> Initialisation témoin présence OT plus récent
+          me->ms_work_area-s_result_check-has_more_recent = abap_true.
+
+        ENDIF.
+
+      ENDIF.
+
+      IF lv_in_list EQ abap_true.
+        " OT présent dans la liste
+        ""  --> Contrôle si l'OT est dans le système cible
+        IF zcl_transport_request=>transport_request_check_import(
+          iv_trkorr    = me->_main_ot_get( <lfs_s_vrsd_st>-korrnum )
+          iv_tarsystem = me->ms_selection_criteria-options-ov_target_sys->*
+        ) EQ abap_false.
+          IF me->ms_selection_criteria-options-ov_reimport->* EQ abap_false.
+            ""  --> Ajout dans la liste de résultat
+            me->result_add(
+              iv_trkorr  = <lfs_s_vrsd_st>-korrnum
+              iv_objname = <lfs_s_vrsd_st>-objname
+              iv_objtype = <lfs_s_vrsd_st>-objtype
+              iv_versno  = 9999
+            ).
+
+          ENDIF.
+
+        ENDIF.
+
+      ENDIF.
+
+      " Récupération position première itération de l'Objet
+      READ TABLE me->ms_work_area-s_sequence_data-t_vrsd
+        WITH KEY objtype = <lfs_s_vrsd_st>-objtype
+                 objname = <lfs_s_vrsd_st>-objname
+              TRANSPORTING NO FIELDS BINARY SEARCH.
+      IF sy-subrc NE 0.
+        " Aucune version
+        ""  --> Passe à l'itération suivante
+        CONTINUE.
+
+      ENDIF.
+
+      " Parcours chaque version de l'Objet
+      LOOP AT me->ms_work_area-s_sequence_data-t_vrsd
+           ASSIGNING FIELD-SYMBOL(<lfs_s_vrsd>) FROM sy-tabix.
+
+        CLEAR : lv_imported_prev_sys, lv_imported_sys.
+
+        IF <lfs_s_vrsd>-objtype NE <lfs_s_vrsd_st>-objtype
+        OR <lfs_s_vrsd>-objname NE <lfs_s_vrsd_st>-objname.
+          " On ne traite plus le même objet
+          ""  --> Arrêt du traitement
+          EXIT.
+
+        ENDIF.
+
+        IF NOT me->ms_selection_criteria-options-or_excluded_trkorr->* IS INITIAL
+           AND <lfs_s_vrsd_st>-korrnum IN me->ms_selection_criteria-options-or_excluded_trkorr->*.
+          " OT dans la liste à Exclure
+          ""  --> Passe à l'itération suivante
+          CONTINUE.
+
+        ENDIF.
+
+        "" --> Récupération OT
+        lv_strkorr = me->_main_ot_get( <lfs_s_vrsd>-korrnum ).
+
+        ""  --> OT transporté dans le Système Cible ?
+        lv_imported_sys = zcl_transport_request=>transport_request_check_import(
+          EXPORTING
+            iv_trkorr        = lv_strkorr
+            iv_tarsystem     = me->ms_selection_criteria-options-ov_target_sys->*
+          IMPORTING
+            es_cofile_header = ls_cofile_header
+        ).
+        IF ls_cofile_header IS INITIAL.
+          " OT n'existe plus
+          ""  --> Passe à l'itération suivante
+          CONTINUE.
+
+        ENDIF.
+
+        ""  --> OT transporté dans le Système Précédent ?
+        lv_imported_prev_sys = zcl_transport_request=>transport_request_check_import(
+            iv_trkorr    = lv_strkorr
+            iv_tarsystem = me->ms_work_area-sys_previous
+        ).
+
+        ""  --> Contrôle que l'OT soit dans la liste de ceux à transporter
+        READ TABLE me->ms_work_area-s_sequence_data-t_sequence_input
+          WITH KEY task_key COMPONENTS trkorr_task = <lfs_s_vrsd>-korrnum
+                             ASSIGNING FIELD-SYMBOL(<lfs_s_sequence>).
+        IF sy-subrc NE 0.
+          " Cette version n'est pas dans la liste des OTs
+          ""  --> Contrôle si l'OT est dans le système cible
+          IF lv_imported_sys EQ abap_true.
+            " OT transporté // Cela signifie que les autres versions sont déjà transportées
+            IF me->ms_selection_criteria-options-ov_reimport->* EQ abap_true
+            AND NOT <lfs_s_last_version>-versno IS INITIAL
+            AND <lfs_s_last_version>-versno LT <lfs_s_vrsd>-versno.
+              " Réimport & Versions plus récéntes dans le Système cible
+              ""  --> Ajout pour séquence manquante (erreur)
+              me->result_add(
+                iv_trkorr  = lv_strkorr
+                iv_objname = <lfs_s_vrsd>-objname
+                iv_objtype = <lfs_s_vrsd>-objtype
+                iv_versno  = <lfs_s_vrsd>-versno
+                iv_msgno   = 028
+                iv_msgty   = if_msg_output=>msgtype_error
+                iv_msgv1   = CONV #( <lfs_s_vrsd>-korrnum )
+              ).
+
+            ELSEIF me->ms_selection_criteria-options-ov_reimport->*        EQ abap_false
+            AND me->ms_selection_criteria-options-ov_ignore_old_version->* EQ abap_true.
+              ""  --> Suppression des entrées portant sur cet Objet
+              DELETE me->ms_work_area-s_sequence_data-t_vrsd
+               WHERE objname = <lfs_s_vrsd>-objname
+                 AND objtype = <lfs_s_vrsd>-objtype.
+
+            ENDIF.
+
+          ELSE.
+            " OT non transporté
+            IF lv_imported_prev_sys EQ abap_false.
+              " OT non importé dans le système précédent
+              READ TABLE me->ms_work_area-s_result_check-t_result
+                WITH KEY objtype = <lfs_s_vrsd>-objtype
+                         objname = <lfs_s_vrsd>-objname
+               ASSIGNING FIELD-SYMBOL(<lfs_s_result_temp>).
+              IF sy-subrc NE 0
+              OR ( <lfs_s_result_temp>-versno GT <lfs_s_vrsd>-versno
+              AND  me->ms_selection_criteria-options-ov_ignore_old_version->* EQ abap_false ).
+                ""  --> Ajout pour séquence manquante (erreur)
+                me->result_add(
+                  iv_trkorr  = lv_strkorr
+                  iv_objname = <lfs_s_vrsd>-objname
+                  iv_objtype = <lfs_s_vrsd>-objtype
+                  iv_versno  = <lfs_s_vrsd>-versno
+                  iv_msgno   = 024
+                  iv_msgty   = if_msg_output=>msgtype_error
+                  iv_msgv1   = CONV #( me->ms_work_area-sys_previous )
+                ).
+
+              ENDIF.
+
+            ELSEIF <lfs_s_last_version>-versno IS INITIAL.
+              " Dernière Version à transporter et celle en cours n'est pas à Transporter
+              ""  --> Ajout pour séquence manquante (erreur)
+              me->result_add(
+                iv_trkorr  = lv_strkorr
+                iv_objname = <lfs_s_vrsd>-objname
+                iv_objtype = <lfs_s_vrsd>-objtype
+                iv_versno  = <lfs_s_vrsd>-versno
+                iv_msgno   = 023
+                iv_msgty   = if_msg_output=>msgtype_error
+                iv_msgv1   = CONV #( <lfs_s_vrsd>-korrnum )
+              ).
+
+            ELSEIF <lfs_s_last_version>-versno LT <lfs_s_vrsd>-versno
+            AND me->ms_selection_criteria-options-ov_ignore_recent->* EQ abap_false.
+              " Tenir compte des Versions plus récente
+              IF line_exists(
+                me->ms_work_area-s_result_check-t_result[
+                  objtype = <lfs_s_vrsd>-objtype
+                  objname = <lfs_s_vrsd>-objname
+                  type    = if_msg_output=>msgtype_error
+                ]
+              ).
+                " Version plus récente transporté mais celle-là manque
+                ""  --> Ajout pour séquence manquante (erreur)
+                me->result_add(
+                  iv_trkorr  = lv_strkorr
+                  iv_objname = <lfs_s_vrsd>-objname
+                  iv_objtype = <lfs_s_vrsd>-objtype
+                  iv_versno  = <lfs_s_vrsd>-versno
+                  iv_msgno   = 024
+                  iv_msgty   = if_msg_output=>msgtype_error
+                  iv_msgv1   = CONV #( me->ms_work_area-sys_previous )
+                ).
+
+              ELSE.
+                " Pas d'OT plus récent non importé
+                ""  --> Ajout pour séquence manquante (avertissement)
+                me->result_add(
+                  iv_trkorr  = lv_strkorr
+                  iv_objname = <lfs_s_vrsd>-objname
+                  iv_objtype = <lfs_s_vrsd>-objtype
+                  iv_versno  = <lfs_s_vrsd>-versno
+                  iv_msgno   = 022
+                  iv_msgty   = if_msg_output=>msgtype_warning
+                  iv_msgv1   = CONV #( <lfs_s_vrsd>-korrnum )
+                ).
+
+              ENDIF.
+
+              ""  --> Témoin version plus récente
+              me->ms_work_area-s_result_check-has_more_recent = abap_true.
+
+            ELSEIF <lfs_s_last_version>-versno GT <lfs_s_vrsd>-versno.
+              " Version moins récente
+              ""  --> Ajout pour séquence manquante (erreur)
+              me->result_add(
+                iv_trkorr  = lv_strkorr
+                iv_objname = <lfs_s_vrsd>-objname
+                iv_objtype = <lfs_s_vrsd>-objtype
+                iv_versno  = <lfs_s_vrsd>-versno
+                iv_msgno   = 023
+                iv_msgty   = if_msg_output=>msgtype_error
+                iv_msgv1   = CONV #( <lfs_s_vrsd>-korrnum )
+              ).
+
+            ENDIF.
+
+          ENDIF.
+
+          ""  --> Passe à l'itération suivante
+          CONTINUE.
+
+        ELSE.
+          " OT présent dans la liste
+          IF  lv_imported_sys EQ abap_true
+          AND me->ms_selection_criteria-options-ov_reimport->* EQ abap_false.
+            " OT déjà importé et option réimport non sélectionné
+            ""  --> Passe à l'itération suivante
+            CONTINUE.
+
+          ENDIF.
+
+          ""  --> Ajout pour séquence
+          me->result_add(
+            iv_trkorr  = <lfs_s_vrsd>-korrnum
+            iv_objname = <lfs_s_vrsd>-objname
+            iv_objtype = <lfs_s_vrsd>-objtype
+            iv_versno  = <lfs_s_vrsd>-versno
+          ).
+
+        ENDIF.
+
+      ENDLOOP.
+
+    ENDLOOP.
+
+  ENDMETHOD.
+
+  METHOD sequence_order_set.
+
+***------------------------------------------------------------------***
+**                            VARIABLES                               **
+***------------------------------------------------------------------***
+    DATA :
+      lv_order        TYPE sy-tabix VALUE 1,
+      lv_not_imported TYPE xsdboolean.
+
+***==================================================================***
+**                             TRAITEMENT                             **
+***==================================================================***
+
+    " -----------------------------------------------------------
+    " Réorganisation du résultat final
+    " -----------------------------------------------------------
+
+    IF me->ms_selection_criteria-options-ov_target_sys->* EQ 'PE1'. ##NOTEXT
+      " Destination Production !
+      ""  --> Tri par Date d'Import dans l'environnement précédent
+      SORT me->ms_work_area-s_result_check-t_result BY import_date import_time trkorr.
+
+      ""  --> Initialisation passage par Date Import
+      LOOP AT me->ms_work_area-s_result_check-t_result
+        ASSIGNING FIELD-SYMBOL(<lfs_s_result>).
+
+        AT NEW trkorr.
+          " A chaque changement d'OT
+          IF <lfs_s_result>-import_date IS INITIAL.
+            " Date Import vide
+            ""  --> Initialisation séquence proposée
+            <lfs_s_result>-sequence_order_prop = 9999 - lv_order.
+
+          ELSE.
+            " OT importé
+            ""  --> Initialisation séquence proposée
+            <lfs_s_result>-sequence_order_prop = lv_order.
+
+          ENDIF.
+
+          ""  --> Modification dans toute la table
+          MODIFY me->ms_work_area-s_result_check-t_result
+            FROM <lfs_s_result> TRANSPORTING sequence_order_prop
+           WHERE trkorr EQ <lfs_s_result>-trkorr.
+
+          ""  --> Incrémentation séquence
+          ADD 1 TO lv_order.
+
+        ENDAT.
+
+      ENDLOOP.
+
+*      IF lv_not_imported EQ abap_true.
+*        ""  --> Modifie l'Ordre pour les OTs non importées
+*        LOOP AT me->ms_work_area-t_result ASSIGNING <lfs_s_result>.
+*
+*          IF NOT <lfs_s_result>-import_date IS INITIAL.
+*            " OT importé
+*            ""  --> Passe à l'itération suivante
+*            CONTINUE.
+*
+*          ENDIF.
+*
+*          DO <lfs_s_result_vers>-versno TIMES.
+*
+*          " Récupération position de la version de l'Objet suivante
+*          READ TABLE me->ms_work_area-t_result
+*            WITH KEY object_key_vers COMPONENTS objtype = <lfs_s_result>-objtype
+*                                                objname = <lfs_s_result>-objname
+*                                                versno  = <lfs_s_result>-versno - 1
+*                                      ASSIGNING FIELD-SYMBOL(<lfs_s_result_vers>).
+*          IF sy-subrc EQ 0.
+*            " Correspondance trouvée
+*            ""  --> Modification des Propositions
+*
+*          ENDIF.
+*
+*            MODIFY me->ms_work_area-t_result
+*              FROM <lfs_s_result> WHERE
+*
+*
+*          ENDDO.
+*
+*
+*
+*        ENDLOOP.
+*
+*      ENDIF.
+
+      " Tri par Ordre de passage
+      SORT me->ms_work_area-s_result_check-t_result BY sequence_order_prop.
+
+    ENDIF.
+
+  ENDMETHOD.
+
+  METHOD message_set.
+
+***==================================================================***
+**                             TRAITEMENT                             **
+***==================================================================***
+
+    " -----------------------------------------------------------
+    " Message
+    " -----------------------------------------------------------
+
+    " Contrôle cohérence OK ?
+    IF line_exists( me->ms_work_area-s_result_check-t_result[
+        type = if_msg_output=>msgtype_error ]
+       ).
+      " Une erreur dans le contrôle
+      ""  --> Message erreur
+      me->ms_work_area-s_result_check-error = abap_true.
+
+      IF me->ms_selection_criteria-options-ov_reimport->* EQ abap_true.
+        " Réimport
+        ""  --> Message d'erreur spécifique
+        MESSAGE s029(zbc) DISPLAY LIKE if_msg_output=>msgtype_error.
+
+      ELSE.
+        " Classique
+        MESSAGE s025(zbc) DISPLAY LIKE if_msg_output=>msgtype_error.
+
+      ENDIF.
+
+    ELSE.
+      " Aucune erreur dans le contrôle
+      ""  --> Recherche présence de message de succès
+      IF line_exists( me->ms_work_area-s_result_check-t_result[
+          type = if_msg_output=>msgtype_success ]
+         ).
+        ""  --> Message succès
+        MESSAGE s026(zbc).
+
+      ELSE.
+        ""  --> Message avertissement rien à faire
+        MESSAGE s027(zbc) DISPLAY LIKE if_msg_output=>msgtype_warning.
+
+      ENDIF.
+
+      IF me->ms_work_area-s_result_check-has_more_recent EQ abap_false.
+        ""  --> Suppression des doublons
+        SORT me->ms_work_area-s_result_check-t_result BY trkorr.
+        DELETE ADJACENT DUPLICATES FROM me->ms_work_area-s_result_check-t_result COMPARING trkorr.
+
+        ""  --> Réinitialisation autres champs
+        me->ms_work_area-s_result_check-t_result[] = CORRESPONDING #(
+          me->ms_work_area-s_result_check-t_result
+            MAPPING type                 = type
+                    icon                 = icon
+                    trkorr               = trkorr
+                    import_date          = import_date
+                    import_time          = import_time
+                    sequence_order_prop  = sequence_order_prop
+                    sequence_order_input = sequence_order_input
+             EXCEPT *
+        ).
+
+      ENDIF.
+
+    ENDIF.
+
+  ENDMETHOD.
+
+  METHOD _main_ot_get.
+
+***==================================================================***
+**                           TRAITEMENT                               **
+***==================================================================***
+
+    CLEAR : rv_trkorr.
+
+    " -----------------------------------------------------------
+    " Récupération de l'OT
+    " -----------------------------------------------------------
+
+    " Récupération du parent de la Tâche
+    SELECT SINGLE strkorr FROM e070
+            WHERE trkorr  EQ @iv_trkorr
+             INTO @rv_trkorr.
+    IF rv_trkorr IS INITIAL.
+      " OT = Tâche
+      ""  --> Initialise OT
+      rv_trkorr = iv_trkorr.
+
+    ENDIF.
+
+  ENDMETHOD.
+
+  METHOD result_add.
+
+***------------------------------------------------------------------***
+**                            STRUCTURE                               **
+***------------------------------------------------------------------***
+    DATA :
+          ls_result TYPE lcl_main=>ts_result.
+
+***------------------------------------------------------------------***
+**                            VARIABLES                               **
+***------------------------------------------------------------------***
+    DATA :
+      lv_strlen TYPE int4.
+
+***==================================================================***
+**                           TRAITEMENT                               **
+***==================================================================***
+
+    " -----------------------------------------------------------
+    " Ajout dans la table de Retour
+    " -----------------------------------------------------------
+
+    " Initialisation données
+    ls_result-type                = SWITCH #( iv_msgno
+      WHEN space THEN if_msg_output=>msgtype_success
+      ELSE iv_msgty
+    ).
+    ls_result-versno              = iv_versno.
+    ls_result-trkorr              = iv_trkorr.
+    ls_result-objname             = iv_objname.
+    ls_result-objtype             = iv_objtype.
+    ls_result-sequence_order_prop = iv_sequence_order_prop.
+
+    " Initialisation position de l'OT dans la séquence
+    READ TABLE me->ms_work_area-s_sequence_data-t_sequence_input
+      WITH KEY task_key COMPONENTS trkorr_task = iv_trkorr
+      ASSIGNING FIELD-SYMBOL(<lfs_s_sequence_input>).
+    IF sy-subrc NE 0.
+      READ TABLE me->ms_work_area-s_sequence_data-t_sequence_input
+        WITH KEY ot_key COMPONENTS trkorr_main = iv_trkorr
+        ASSIGNING <lfs_s_sequence_input>.
+
+    ENDIF.
+    IF sy-subrc EQ 0.
+      ls_result-sequence_order_input = <lfs_s_sequence_input>-sequence_order.
+
+    ENDIF.
+
+    IF NOT iv_msgid IS INITIAL AND NOT iv_msgno IS INITIAL.
+      " ID Message & Numéro de Message
+      ""  --> Construction du message
+      IF iv_msgty IS INITIAL. iv_msgty = if_msg_output=>msgtype_error. ENDIF.
+      MESSAGE ID iv_msgid TYPE iv_msgty NUMBER iv_msgno
+            WITH iv_msgv1 iv_msgv2 iv_msgv3 iv_msgv4
+            INTO ls_result-message.
+
+    ENDIF.
+
+    " Récupération données CoFile
+    DATA(lt_cofile) = zcl_transport_request=>transport_request_cofile_get( iv_trkorr ).
+
+    " Récupération dernière Date de Transport
+    SORT lt_cofile BY tarsystem function trdate DESCENDING trtime DESCENDING.
+    READ TABLE lt_cofile WITH KEY tarsystem = me->ms_work_area-sys_previous
+                                  function  = cl_cts_change_tracking_api=>co_import_status_imported
+                        ASSIGNING FIELD-SYMBOL(<lfs_s_cofile>) BINARY SEARCH.
+    IF sy-subrc EQ 0.
+      " L'OT a été transportée dans l'environnement précédent
+      ""  --> Initialisation date de transport
+      ls_result-import_date = <lfs_s_cofile>-trdate.
+      ls_result-import_time = <lfs_s_cofile>-trtime.
+
+    ELSE.
+      " OT non transportée dans l'environnement précédent
+      ""  --> Cas traité en anomalie ou système <> PE1
+      ls_result-use_sequence_order = abap_true.
+
+      ""  --> Récupération de la Version plus récente
+      READ TABLE me->ms_work_area-s_result_check-t_result
+        WITH KEY objtype = ls_result-objtype
+                 objname = ls_result-objname
+                 versno  = ls_result-versno + 1
+       ASSIGNING FIELD-SYMBOL(<lfs_s_recent_version>).
+      IF sy-subrc EQ 0.
+        " Correspondance trouvée
+        ""  --> Initialisation Date de Transport de la Version plus récente
+        ls_result-import_date = <lfs_s_recent_version>-import_date.
+        ls_result-import_time = <lfs_s_recent_version>-import_time.
+
+      ENDIF.
+
+    ENDIF.
+
+    " Icône
+    ls_result-icon = SWITCH #( ls_result-type
+      WHEN if_msg_output=>msgtype_error   THEN text-e00
+      WHEN if_msg_output=>msgtype_success THEN text-s00
+      WHEN if_msg_output=>msgtype_warning THEN text-i00
+    ).
+
+    " Ajout de l'entrée
+    APPEND ls_result TO me->ms_work_area-s_result_check-t_result.
+
+    " -----------------------------------------------------------
+    " Condition d'affichage
+    " -----------------------------------------------------------
+
+    " Taille affichage - Message
+    lv_strlen = strlen( ls_result-message ).
+    IF lv_strlen GT me->ms_work_area-s_output_format-length-message.
+      " Taille message plus grande
+      ""  --> Utilisation de cette taille
+      me->ms_work_area-s_output_format-length-message = lv_strlen + 2.
+
+    ENDIF.
+
+    " Taille affichage - Objet
+    lv_strlen = strlen( ls_result-objname ).
+    IF lv_strlen GT me->ms_work_area-s_output_format-length-objname.
+      " Taille objet plus grande
+      ""  --> Utilisation de cette taille
+      me->ms_work_area-s_output_format-length-objname = lv_strlen + 2.
+
+    ENDIF.
+
+  ENDMETHOD.
+
+  METHOD result_display.
+
+***------------------------------------------------------------------***
+**                            INSTANCES                               **
+***------------------------------------------------------------------***
+    DATA :
+      lo_column     TYPE REF TO cl_salv_column,
+      lo_columns    TYPE REF TO cl_salv_columns,
+      lo_salv_table TYPE REF TO cl_salv_table.
+
+***==================================================================***
+**                           TRAITEMENT                               **
+***==================================================================***
+
+    " -----------------------------------------------------------
+    " Contrôle
+    " -----------------------------------------------------------
+
+    IF me->ms_work_area-s_result_check-t_result[] IS INITIAL.
+      " Aucun OT
+      ""  --> Arrêt du traitement
+      RETURN.
+
+    ENDIF.
+
+    TRY.
+        " -----------------------------------------------------------
+        " Génération Instance ALV
+        " -----------------------------------------------------------
+
+        " Génération instance
+        cl_salv_table=>factory(
+          EXPORTING
+            list_display   = sy-batch
+          IMPORTING
+            r_salv_table   = lo_salv_table
+          CHANGING
+            t_table        = me->ms_work_area-s_result_check-t_result
+        ).
+
+        " -----------------------------------------------------------
+        " Customization
+        " -----------------------------------------------------------
+
+        lo_salv_table->get_functions( )->set_all( abap_true ).
+
+        TRY.
+            " -----------------------------------------------------------
+            " Modification Affichage
+            " -----------------------------------------------------------
+
+            " Récupération instance des Colonnes
+            lo_columns = lo_salv_table->get_columns( ).
+
+            TRY.
+                " Récupération de la Colonne "TYPE" - Type de message
+                lo_column = lo_columns->get_column( 'TYPE' ). "#EC NOTEXT
+
+                " Affiche la colonne en cas d'erreur
+                lo_column->set_visible( abap_false ).
+
+              CATCH : cx_salv_not_found, cx_salv_data_error.
+                " Une erreur est survenue
+                ""  --> Tant pis ...
+
+            ENDTRY.
+
+
+            TRY.
+                " Récupération de la Colonne "ICON" - Icône
+                lo_column = lo_columns->get_column( 'ICON' ). "#EC NOTEXT
+*                lo_column->set_
+
+              CATCH : cx_salv_not_found, cx_salv_data_error.
+                " Une erreur est survenue
+                ""  --> Tant pis ...
+
+            ENDTRY.
+
+            TRY.
+                " Récupération de la Colonne "TRKORR" - Numéro OT
+                lo_column = lo_columns->get_column( 'TRKORR' ). "#EC NOTEXT
+                lo_column->set_output_length( 10 ).
+
+              CATCH : cx_salv_not_found, cx_salv_data_error.
+                " Une erreur est survenue
+                ""  --> Tant pis ...
+
+            ENDTRY.
+
+            TRY.
+                " Récupération de la Colonne "OBJTYPE" - Type d'Objet
+                lo_column = lo_columns->get_column( 'OBJTYPE' ). "#EC NOTEXT
+                lo_column->set_output_length( 6 ).
+
+                " Affiche la colonne en cas d'erreur
+                lo_column->set_visible( boolc(
+                    me->ms_work_area-s_result_check-error           EQ abap_true OR
+                    me->ms_work_area-s_result_check-has_more_recent EQ abap_true
+                  )
+                ).
+
+              CATCH : cx_salv_not_found, cx_salv_data_error.
+                " Une erreur est survenue
+                ""  --> Tant pis ...
+
+            ENDTRY.
+
+            TRY.
+                " Récupération de la Colonne "OBJNAME" - Nom d'Objet
+                lo_column = lo_columns->get_column( 'OBJNAME' ). "#EC NOTEXT
+                lo_column->set_output_length( me->ms_work_area-s_output_format-length-objname ).
+
+                " Affiche la colonne en cas d'erreur
+                lo_column->set_visible( boolc(
+                    me->ms_work_area-s_result_check-error           EQ abap_true OR
+                    me->ms_work_area-s_result_check-has_more_recent EQ abap_true
+                  )
+                ).
+
+              CATCH : cx_salv_not_found, cx_salv_data_error.
+                " Une erreur est survenue
+                ""  --> Tant pis ...
+
+            ENDTRY.
+
+            TRY.
+                " Récupération de la Colonne "VERSNO" - Numéro de Version
+                lo_column = lo_columns->get_column( 'VERSNO' ). "#EC NOTEXT
+
+                " Affiche la colonne en cas d'erreur
+                lo_column->set_visible( boolc(
+                    me->ms_work_area-s_result_check-error           EQ abap_true OR
+                    me->ms_work_area-s_result_check-has_more_recent EQ abap_true
+                  )
+                ).
+
+              CATCH : cx_salv_not_found, cx_salv_data_error.
+                " Une erreur est survenue
+                ""  --> Tant pis ...
+
+            ENDTRY.
+
+            TRY.
+                " Récupération de la Colonne "MESSAGE" - Message
+                lo_column = lo_columns->get_column( 'MESSAGE' ). "#EC NOTEXT
+                lo_column->set_visible( boolc(
+                    me->ms_work_area-s_result_check-error           EQ abap_true OR
+                    me->ms_work_area-s_result_check-has_more_recent EQ abap_true
+                  )
+                ).
+                lo_column->set_output_length( me->ms_work_area-s_output_format-length-message ).
+                lo_column->set_long_text( CONV #( text-mes ) ).
+                lo_column->set_short_text( CONV #( text-mes ) ).
+                lo_column->set_medium_text( CONV #( text-mes ) ).
+
+              CATCH : cx_salv_not_found, cx_salv_data_error.
+                " Une erreur est survenue
+                ""  --> Tant pis ...
+
+            ENDTRY.
+
+            TRY.
+                " Récupération de la Colonne "IMPORT_DATE" - Date d'Import
+                lo_column = lo_columns->get_column( 'IMPORT_DATE' ). "#EC NOTEXT
+                lo_column->set_visible( lcl_main=>mc_activate_proposal ).
+
+              CATCH : cx_salv_not_found, cx_salv_data_error.
+                " Une erreur est survenue
+                ""  --> Tant pis ...
+
+            ENDTRY.
+
+            TRY.
+                " Récupération de la Colonne "IMPORT_TIME" - Heure d'Import
+                lo_column = lo_columns->get_column( 'IMPORT_TIME' ). "#EC NOTEXT
+                lo_column->set_visible( lcl_main=>mc_activate_proposal ).
+
+              CATCH : cx_salv_not_found, cx_salv_data_error.
+                " Une erreur est survenue
+                ""  --> Tant pis ...
+
+            ENDTRY.
+
+            TRY.
+                " Récupération de la Colonne "SEQUENCE_ORDER_INPUT" - Séquence saisie
+                lo_column = lo_columns->get_column( 'SEQUENCE_ORDER_INPUT' ). "#EC NOTEXT
+                lo_column->set_visible( lcl_main=>mc_activate_proposal ).
+                lo_column->set_output_length( '13' ).
+                lo_column->set_long_text( CONV #( text-soi ) ).
+                lo_column->set_short_text( CONV #( text-soi ) ).
+                lo_column->set_medium_text( CONV #( text-soi ) ).
+
+              CATCH : cx_salv_not_found, cx_salv_data_error.
+                " Une erreur est survenue
+                ""  --> Tant pis ...
+
+            ENDTRY.
+
+            TRY.
+                " Récupération de la Colonne "SEQUENCE_ORDER_PROP" - Séquence proposée
+                lo_column = lo_columns->get_column( 'SEQUENCE_ORDER_PROP' ). "#EC NOTEXT.
+                lo_column->set_visible( boolc(
+                  lcl_main=>mc_activate_proposal EQ abap_true
+                  OR me->ms_selection_criteria-options-ov_target_sys->* EQ 'PE1' ) "#EC NOTEXT
+                ).
+                lo_column->set_output_length( '16' ).
+                lo_column->set_long_text( CONV #( text-sop ) ).
+                lo_column->set_short_text( CONV #( text-sop ) ).
+                lo_column->set_medium_text( CONV #( text-sop ) ).
+
+              CATCH : cx_salv_not_found, cx_salv_data_error.
+                " Une erreur est survenue
+                ""  --> Tant pis ...
+
+            ENDTRY.
+
+            TRY.
+                " Récupération de la Colonne "USE_SEQUENCE_ORDER" - Utilise Ordre de la séquence
+                lo_column = lo_columns->get_column( 'USE_SEQUENCE_ORDER' ). "#EC NOTEXT
+                lo_column->set_visible( abap_false ).
+
+              CATCH : cx_salv_not_found, cx_salv_data_error.
+                " Une erreur est survenue
+                ""  --> Tant pis ...
+
+            ENDTRY.
+
+          CATCH cx_root.
+            " Une erreur est survenue
+
+        ENDTRY.
+
+        " -----------------------------------------------------------
+        " Affichage
+        " -----------------------------------------------------------
+
+        " Affichage de l'ALV
+        lo_salv_table->display( ).
+
+      CATCH cx_salv_msg.
+
+    ENDTRY.
+
+  ENDMETHOD.
+
+  METHOD start_of_selection.
+
+***==================================================================***
+**                           TRAITEMENT                               **
+***==================================================================***
+
+    " -----------------------------------------------------------
+    " Contrôle saisie
+    " -----------------------------------------------------------
+
+    " Contrôle saisie
+    IF me->criteria_check( ) NE 0.
+      " Erreur de saisie
+      ""  --> Arrêt du traitement
+      RETURN.
+
+    ENDIF.
+
+    " -----------------------------------------------------------
+    " Récupération des données
+    " -----------------------------------------------------------
+
+    " Récupération des données
+    me->data_get( ).
+
+    " -----------------------------------------------------------
+    " Contrôle séquence
+    " -----------------------------------------------------------
+
+    " Contrôle séquence
+    me->sequence_check( ).
+
+    " -----------------------------------------------------------
+    " Réorganisation du résultat final
+    " -----------------------------------------------------------
+
+    " Initialisation de l'Ordre
+    me->sequence_order_set( ).
+
+    " -----------------------------------------------------------
+    " Affiche message traitement
+    " -----------------------------------------------------------
+
+    " Affichage message
+    me->message_set( ).
+
+    " -----------------------------------------------------------
+    " Affichage résultat
+    " -----------------------------------------------------------
+
+    " Affichage résultat
+    me->result_display( ).
+
+  ENDMETHOD.
+
+ENDCLASS.
+
+DATA : go_main TYPE REF TO lcl_main.
+
+***==================================================================***
+**                           INITIALIZATION                           **
+***==================================================================***
+INITIALIZATION.
+  " Génération instance
+  go_main = lcl_main=>factory( ).
+
+***==================================================================***
+**                     AT SELECTION-SCREEN OUTPUT                     **
+***==================================================================***
+AT SELECTION-SCREEN OUTPUT.
+  " Modification écran de sélection
+  go_main->at_selection_screen_ouput( ).
+
+***==================================================================***
+**                AT SELECTION-SCREEN ON VALUE REQUEST                **
+***==================================================================***
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_sysid.
+  " Système Cible - Aide à la recherche
+  go_main->sysid_value_help( ).
+
+***==================================================================***
+**                         START-OF-SELECTION                         **
+***==================================================================***
+START-OF-SELECTION.
+
+***==================================================================***
+**                             TRAITEMENT                             **
+***==================================================================***
+
+  " Traitement principal
+  go_main->start_of_selection( ).
+
+END-OF-SELECTION.
