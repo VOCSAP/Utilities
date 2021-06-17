@@ -1,10 +1,21 @@
 *&---------------------------------------------------------------------*
-*& Report  Z_A_BC_TRANSPORT_CHECK
-*&
+*& Programme       : Z_A_BC_TRANSPORT_CHECK                            *
+*& Description     : Contrôle cohérence d'une Demande de Transport     *
+*                                                                      *
 *&---------------------------------------------------------------------*
-*&
-*&
 *&---------------------------------------------------------------------*
+*& Créé par     : Olivier Véhier                                       *
+*                                                                      *
+*& Créé le      : 15/07/2020                                           *
+*                                                                      *
+*&---------------------------------------------------------------------*
+*&---------------------------------------------------------------------*
+*& Liste des modifications                                             *
+*& Auteur      Date       Signature  Objet de la modification          *
+*&---------------------------------------------------------------------*
+*&---------------------------------------------------------------------*
+*                                                                      *
+
 REPORT z_a_bc_transport_check.
 
 TABLES : e070, ztbrequest.
@@ -167,18 +178,19 @@ CLASS lcl_main DEFINITION FINAL CREATE PRIVATE.
 
     TYPES :
       BEGIN OF ts_result,
-        type                 TYPE sy-msgty,
-        icon                 TYPE icon-id,
-        trkorr               TYPE e070-trkorr,
-        sequence_order_input TYPE ztborderseq-zedreqpos,
-        sequence_order_prop  TYPE ztborderseq-zedreqpos,
-        objtype              TYPE vrsd-objtype,
-        objname              TYPE vrsd-objname,
-        versno               TYPE vrsd-versno,
-        message              TYPE string,
-        import_date          TYPE sy-datum,
-        import_time          TYPE sy-uzeit,
-        use_sequence_order   TYPE xsdboolean,
+        type                   TYPE sy-msgty,
+        icon                   TYPE icon-id,
+        trkorr                 TYPE e070-trkorr,
+        sequence_order_input   TYPE ztborderseq-zedreqpos,
+        sequence_order_prop    TYPE ztborderseq-zedreqpos,
+        objtype                TYPE vrsd-objtype,
+        objname                TYPE vrsd-objname,
+        versno                 TYPE vrsd-versno,
+        message                TYPE string,
+        import_date            TYPE sy-datum,
+        import_time            TYPE sy-uzeit,
+        use_sequence_order     TYPE xsdboolean,
+        not_in_previous_system TYPE xsdboolean,
       END OF   ts_result.
 
     TYPES : tt_result TYPE STANDARD TABLE OF ts_result
@@ -280,6 +292,7 @@ CLASS lcl_main DEFINITION FINAL CREATE PRIVATE.
     DATA : ms_work_area TYPE lcl_main=>ts_work_area.
     DATA : ms_selection_criteria TYPE lcl_main=>ts_selection_criteria.
     CLASS-DATA : mc_activate_proposal TYPE xsdboolean VALUE abap_false.
+    CONSTANTS : mc_version_active TYPE vrsd-versno VALUE '99999'.
 
 ENDCLASS.             "lcl_main DEFINITION
 
@@ -567,11 +580,18 @@ CLASS lcl_main IMPLEMENTATION.
   ENDMETHOD.
 
   METHOD data_get.
+
 ***------------------------------------------------------------------***
 **                             RANGES                                 **
 ***------------------------------------------------------------------***
     DATA :
           lr_trkorr TYPE ucon_tr_req_range.
+
+***------------------------------------------------------------------***
+**                            STRUCTURE                               **
+***------------------------------------------------------------------***
+    DATA :
+          ls_vrsd TYPE lcl_main=>ts_vrsd.
 
 ***==================================================================***
 **                           TRAITEMENT                               **
@@ -622,14 +642,14 @@ CLASS lcl_main IMPLEMENTATION.
 
     ENDLOOP.
 
-    " -----------------------------------------------------------
-    " Récupération des plus hautes Versions des Objets
-    " -----------------------------------------------------------
-
-    SELECT objtype, objname, MAX( versno )
-      FROM vrsd WHERE korrnum IN @lr_trkorr[]
-             GROUP BY objtype, objname
-           INTO TABLE @me->ms_work_area-s_sequence_data-t_last_version_input.
+*    " -----------------------------------------------------------
+*    " Récupération des plus hautes Versions des Objets
+*    " -----------------------------------------------------------
+*
+*    SELECT objtype, objname, MAX( versno )
+*      FROM vrsd WHERE korrnum IN @lr_trkorr[]
+*             GROUP BY objtype, objname
+*           INTO TABLE @me->ms_work_area-s_sequence_data-t_last_version_input.
 
     " -----------------------------------------------------------
     " Récupération des Versions des Objets contenus dans les OTs
@@ -649,6 +669,28 @@ CLASS lcl_main IMPLEMENTATION.
          AND objname EQ @me->ms_work_area-s_sequence_data-t_vrsd-objname
          AND korrnum NE @space
         INTO TABLE @me->ms_work_area-s_sequence_data-t_vrsd.
+
+    ENDIF.
+
+    IF sy-subrc EQ 0.
+      " -----------------------------------------------------------
+      " Modification Numéro de Version active
+      " -----------------------------------------------------------
+
+      " Version Active = '000000' ==> Modifie pour avoir la position la plus haute
+      ls_vrsd-versno = lcl_main=>mc_version_active.
+      MODIFY me->ms_work_area-s_sequence_data-t_vrsd
+        FROM ls_vrsd TRANSPORTING versno
+       WHERE versno  IS INITIAL.
+
+      " -----------------------------------------------------------
+      " Récupération des plus hautes Versions des Objets
+      " -----------------------------------------------------------
+
+      " Conserve la plus haute Version des Objets
+      me->ms_work_area-s_sequence_data-t_last_version_input[] = me->ms_work_area-s_sequence_data-t_vrsd[].
+      SORT me->ms_work_area-s_sequence_data-t_last_version_input BY objtype objname versno DESCENDING.
+      DELETE ADJACENT DUPLICATES FROM me->ms_work_area-s_sequence_data-t_last_version_input COMPARING objtype objname.
 
     ENDIF.
 
@@ -682,20 +724,25 @@ CLASS lcl_main IMPLEMENTATION.
 ***==================================================================***
 
     " -----------------------------------------------------------
-    " Contrôle cohérence de Transport
+    " Pré-Traitement
     " -----------------------------------------------------------
 
     " Tri par Position
     SORT me->ms_work_area-s_sequence_data-t_sequence_input BY sequence_order.
 
+    " Tri par Objet / Version
+    SORT me->ms_work_area-s_sequence_data-t_vrsd BY objtype objname versno DESCENDING.
+
     " Conserve la Version la plus récente de l'Objet
     lt_vrsd_st[] = me->ms_work_area-s_sequence_data-t_vrsd[].
-    SORT lt_vrsd_st BY objtype objname versno.
     DELETE ADJACENT DUPLICATES FROM lt_vrsd_st COMPARING objtype objname.
 
-    " Tri par Version décroissante
-    SORT me->ms_work_area-s_sequence_data-t_vrsd BY objtype objname versno DESCENDING.
-    DELETE me->ms_work_area-s_sequence_data-t_vrsd WHERE versno IS INITIAL.
+    " Supprime Version active
+    DELETE me->ms_work_area-s_sequence_data-t_vrsd WHERE versno EQ lcl_main=>mc_version_active.
+
+    " -----------------------------------------------------------
+    " Contrôle cohérence de Transport
+    " -----------------------------------------------------------
 
     " Contrôle chaque Objet
     LOOP AT lt_vrsd_st ASSIGNING FIELD-SYMBOL(<lfs_s_vrsd_st>).
@@ -731,7 +778,7 @@ CLASS lcl_main IMPLEMENTATION.
             iv_trkorr  = <lfs_s_vrsd_st>-korrnum
             iv_objname = <lfs_s_vrsd_st>-objname
             iv_objtype = <lfs_s_vrsd_st>-objtype
-            iv_versno  = 9999
+            iv_versno  = <lfs_s_vrsd_st>-versno
             iv_msgno   = 022
             iv_msgty   = if_msg_output=>msgtype_warning
           ).
@@ -756,7 +803,7 @@ CLASS lcl_main IMPLEMENTATION.
               iv_trkorr  = <lfs_s_vrsd_st>-korrnum
               iv_objname = <lfs_s_vrsd_st>-objname
               iv_objtype = <lfs_s_vrsd_st>-objtype
-              iv_versno  = 9999
+              iv_versno  = <lfs_s_vrsd_st>-versno
             ).
 
           ENDIF.
@@ -833,7 +880,6 @@ CLASS lcl_main IMPLEMENTATION.
           IF lv_imported_sys EQ abap_true.
             " OT transporté // Cela signifie que les autres versions sont déjà transportées
             IF me->ms_selection_criteria-options-ov_reimport->* EQ abap_true
-            AND NOT <lfs_s_last_version>-versno IS INITIAL
             AND <lfs_s_last_version>-versno LT <lfs_s_vrsd>-versno.
               " Réimport & Versions plus récéntes dans le Système cible
               ""  --> Ajout pour séquence manquante (erreur)
@@ -880,7 +926,7 @@ CLASS lcl_main IMPLEMENTATION.
 
               ENDIF.
 
-            ELSEIF <lfs_s_last_version>-versno IS INITIAL.
+            ELSEIF <lfs_s_last_version>-versno EQ lcl_main=>mc_version_active.
               " Dernière Version à transporter et celle en cours n'est pas à Transporter
               ""  --> Ajout pour séquence manquante (erreur)
               me->result_add(
@@ -1007,10 +1053,10 @@ CLASS lcl_main IMPLEMENTATION.
 
         AT NEW trkorr.
           " A chaque changement d'OT
-          IF <lfs_s_result>-import_date IS INITIAL.
-            " Date Import vide
-            ""  --> Initialisation séquence proposée
-            <lfs_s_result>-sequence_order_prop = 9999 - lv_order.
+          IF <lfs_s_result>-not_in_previous_system IS INITIAL.
+            " OT non importé dans système précedent
+            ""  --> ToDo : Détermination de la séquence proposée
+            <lfs_s_result>-sequence_order_prop = -1.
 
           ELSE.
             " OT importé
@@ -1030,43 +1076,6 @@ CLASS lcl_main IMPLEMENTATION.
         ENDAT.
 
       ENDLOOP.
-
-*      IF lv_not_imported EQ abap_true.
-*        ""  --> Modifie l'Ordre pour les OTs non importées
-*        LOOP AT me->ms_work_area-t_result ASSIGNING <lfs_s_result>.
-*
-*          IF NOT <lfs_s_result>-import_date IS INITIAL.
-*            " OT importé
-*            ""  --> Passe à l'itération suivante
-*            CONTINUE.
-*
-*          ENDIF.
-*
-*          DO <lfs_s_result_vers>-versno TIMES.
-*
-*          " Récupération position de la version de l'Objet suivante
-*          READ TABLE me->ms_work_area-t_result
-*            WITH KEY object_key_vers COMPONENTS objtype = <lfs_s_result>-objtype
-*                                                objname = <lfs_s_result>-objname
-*                                                versno  = <lfs_s_result>-versno - 1
-*                                      ASSIGNING FIELD-SYMBOL(<lfs_s_result_vers>).
-*          IF sy-subrc EQ 0.
-*            " Correspondance trouvée
-*            ""  --> Modification des Propositions
-*
-*          ENDIF.
-*
-*            MODIFY me->ms_work_area-t_result
-*              FROM <lfs_s_result> WHERE
-*
-*
-*          ENDDO.
-*
-*
-*
-*        ENDLOOP.
-*
-*      ENDIF.
 
       " Tri par Ordre de passage
       SORT me->ms_work_area-s_result_check-t_result BY sequence_order_prop.
@@ -1243,21 +1252,24 @@ CLASS lcl_main IMPLEMENTATION.
     ELSE.
       " OT non transportée dans l'environnement précédent
       ""  --> Cas traité en anomalie ou système <> PE1
-      ls_result-use_sequence_order = abap_true.
+      ls_result-use_sequence_order     = abap_true.
+      ls_result-not_in_previous_system = abap_true.
 
       ""  --> Récupération de la Version plus récente
-      READ TABLE me->ms_work_area-s_result_check-t_result
-        WITH KEY objtype = ls_result-objtype
-                 objname = ls_result-objname
-                 versno  = ls_result-versno + 1
-       ASSIGNING FIELD-SYMBOL(<lfs_s_recent_version>).
-      IF sy-subrc EQ 0.
-        " Correspondance trouvée
-        ""  --> Initialisation Date de Transport de la Version plus récente
-        ls_result-import_date = <lfs_s_recent_version>-import_date.
-        ls_result-import_time = <lfs_s_recent_version>-import_time.
+      LOOP AT me->ms_work_area-s_result_check-t_result
+        ASSIGNING FIELD-SYMBOL(<lfs_s_result>)
+        WHERE objtype EQ ls_result-objtype
+          AND objname EQ ls_result-objname
+          AND versno  GT ls_result-versno.
 
-      ENDIF.
+        " Initialisation Date de Transport de la Version plus récente
+        ls_result-import_date = <lfs_s_result>-import_date.
+        ls_result-import_time = <lfs_s_result>-import_time.
+
+        " Arrêt de la boucle
+        EXIT.
+
+      ENDLOOP.
 
     ENDIF.
 
@@ -1515,6 +1527,17 @@ CLASS lcl_main IMPLEMENTATION.
             TRY.
                 " Récupération de la Colonne "USE_SEQUENCE_ORDER" - Utilise Ordre de la séquence
                 lo_column = lo_columns->get_column( 'USE_SEQUENCE_ORDER' ). "#EC NOTEXT
+                lo_column->set_visible( abap_false ).
+
+              CATCH : cx_salv_not_found, cx_salv_data_error.
+                " Une erreur est survenue
+                ""  --> Tant pis ...
+
+            ENDTRY.
+
+            TRY.
+                " Récupération de la Colonne "NOT_IN_PREVIOUS_SYSTEM" - Pas dans le précédent système
+                lo_column = lo_columns->get_column( 'NOT_IN_PREVIOUS_SYSTEM' ). "#EC NOTEXT
                 lo_column->set_visible( abap_false ).
 
               CATCH : cx_salv_not_found, cx_salv_data_error.
