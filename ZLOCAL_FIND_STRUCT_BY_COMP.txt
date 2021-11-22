@@ -1,0 +1,166 @@
+*&---------------------------------------------------------------------*
+*& Report  ZLOCAL_FIND_STRUCT_BY_COMP
+*&
+*&---------------------------------------------------------------------*
+*&
+*& Permet de trouver une structure contenant uniquement les champs saisis
+*&---------------------------------------------------------------------*
+
+REPORT zlocal_find_struct_by_comp.
+
+TABLES : dd03l.
+
+SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE text-tb1.
+
+" Liste des Composants
+SELECT-OPTIONS : s_comp FOR dd03l-fieldname OBLIGATORY.
+
+" Liste des noms
+SELECT-OPTIONS : s_tab  FOR dd03l-tabname.
+
+SELECTION-SCREEN END OF BLOCK b1.
+
+SELECTION-SCREEN BEGIN OF BLOCK b2 WITH FRAME TITLE text-tb2.
+
+" Mode Strict
+PARAMETERS : p_strict TYPE flag DEFAULT 'X'.
+
+SELECTION-SCREEN END OF BLOCK b2.
+
+START-OF-SELECTION.
+
+***------------------------------------------------------------------***
+**                              TYPES                                 **
+***------------------------------------------------------------------***
+  TYPES :
+    BEGIN OF ty_tabname_line,
+      tabname TYPE dd03l-tabname,
+    END OF   ty_tabname_line.
+
+  TYPES : ty_t_tabname_line TYPE STANDARD TABLE OF ty_tabname_line
+                  WITH NON-UNIQUE KEY primary_key COMPONENTS tabname.
+
+  TYPES :
+    BEGIN OF ty_dd03l,
+      tabname   TYPE dd03l-tabname,
+      fieldname TYPE dd03l-fieldname,
+    END OF   ty_dd03l.
+
+  TYPES : ty_t_dd03l TYPE SORTED TABLE OF ty_dd03l
+                      WITH NON-UNIQUE KEY primary_key COMPONENTS tabname fieldname.
+
+***------------------------------------------------------------------***
+**                             TABLES                                 **
+***------------------------------------------------------------------***
+  DATA :
+    lt_dd03l        TYPE ty_t_dd03l,
+    lt_tabname_line TYPE ty_t_tabname_line.
+
+***------------------------------------------------------------------***
+**                            VARIABLES                               **
+***------------------------------------------------------------------***
+  DATA :
+    lv_count            TYPE i,
+    lv_eligible         TYPE flag,
+    lv_component_number TYPE i.
+
+***==================================================================***
+**                           TRAITEMENT                               **
+***==================================================================***
+
+  " -----------------------------------------------------------
+  " Contrôle pré-traitement
+  " -----------------------------------------------------------
+
+  " Recherche présence de critère "pattern"
+  READ TABLE s_comp WITH KEY option = 'CP'
+                TRANSPORTING NO FIELDS.
+  IF sy-subrc EQ 0.
+    " Recherche pattern
+    ""  --> Force sans le mode Strict
+    CLEAR : p_strict.
+
+  ENDIF.
+
+  " -----------------------------------------------------------
+  " Récupération des structures
+  " -----------------------------------------------------------
+
+  IF p_strict EQ abap_true.
+    " Mode "Strict"
+    lv_component_number = lines( s_comp[] ).
+
+    SELECT DISTINCT tabname FROM dd03l
+                      INTO TABLE lt_dd03l
+                           WHERE tabname   IN s_tab[]
+                             AND fieldname IN s_comp[]
+                             AND position  LE lv_component_number.
+
+  ELSE.
+    " Mode "tolérant"
+    SELECT DISTINCT tabname FROM dd03l
+                      INTO TABLE lt_dd03l
+                           WHERE tabname   IN s_tab[]
+                             AND fieldname IN s_comp[].
+
+  ENDIF.
+  IF sy-subrc EQ 0.
+    SELECT tabname fieldname FROM dd03l
+                       INTO TABLE lt_dd03l
+               FOR ALL ENTRIES IN lt_dd03l
+                            WHERE tabname EQ lt_dd03l-tabname.
+
+  ENDIF.
+  IF sy-subrc NE 0.
+    RETURN.
+
+  ENDIF.
+
+  " -----------------------------------------------------------
+  " Affichage du résultat
+  " -----------------------------------------------------------
+
+  lt_tabname_line = CORRESPONDING #( lt_dd03l MAPPING tabname = tabname ).
+  SORT lt_tabname_line BY tabname. DELETE ADJACENT DUPLICATES FROM lt_tabname_line.
+
+  LOOP AT lt_tabname_line ASSIGNING FIELD-SYMBOL(<lfs_s_tabname>).
+
+    CLEAR : lv_count.
+
+    READ TABLE lt_dd03l WITH KEY tabname = <lfs_s_tabname>-tabname
+                    TRANSPORTING NO FIELDS BINARY SEARCH.
+    IF sy-subrc NE 0.
+      CONTINUE.
+
+    ENDIF.
+
+    LOOP AT lt_dd03l ASSIGNING FIELD-SYMBOL(<lfs_s_dd03l>)
+                          FROM sy-tabix.
+
+      IF <lfs_s_dd03l>-tabname NE <lfs_s_tabname>-tabname.
+        EXIT.
+
+      ENDIF.
+
+      IF <lfs_s_dd03l>-fieldname IN s_comp[].
+        lv_eligible = abap_true.
+        ADD 1 TO lv_count.
+
+      ELSE.
+        lv_eligible = abap_false.
+        EXIT.
+
+      ENDIF.
+
+    ENDLOOP.
+
+    IF  lv_eligible EQ abap_true
+    AND lv_count    EQ lv_component_number.
+      WRITE : <lfs_s_tabname>-tabname, /.
+
+    ELSE.
+      DELETE lt_dd03l WHERE tabname EQ <lfs_s_tabname>-tabname.
+
+    ENDIF.
+
+  ENDLOOP.

@@ -1,0 +1,318 @@
+<?xml version="1.0" encoding="utf-8"?>
+<nugget name="VERSION_CHECK_1.0">
+ <PROG NAME="Z_A_OBJECT_CHECK_VERSION" VARCL="X" SUBC="1" APPL="*" RSTAT="K" RMAND="200" RLOAD="F" FIXPT="X" UCCHECK="X">
+  <textPool>
+   <language SPRAS="F">
+    <textElement ID="I" KEY="E00" ENTRY="@0A@" LENGTH="14 "/>
+    <textElement ID="I" KEY="E02" ENTRY="Objet(s) non présent dans OT" LENGTH="56 "/>
+    <textElement ID="I" KEY="I00" ENTRY="@09@" LENGTH="14 "/>
+    <textElement ID="I" KEY="S00" ENTRY="@08@" LENGTH="14 "/>
+    <textElement ID="I" KEY="TB1" ENTRY="Objet(s) à vérifier" LENGTH="26 "/>
+    <textElement ID="I" KEY="TPR" ENTRY="Production" LENGTH="20 "/>
+    <textElement ID="I" KEY="TRE" ENTRY="Recette" LENGTH="17 "/>
+    <textElement ID="R" ENTRY="Contrôle Version de(s) (l&apos;)Objet(s)" LENGTH="35 "/>
+    <textElement ID="S" KEY="S_OBJECT" ENTRY="D       ." LENGTH="9 "/>
+   </language>
+  </textPool>
+  <source>*&amp;---------------------------------------------------------------------*
+*&amp; Report  Z_A_OBJECT_CHECK_VERSION
+*&amp;
+*&amp;---------------------------------------------------------------------*
+*&amp;
+*&amp;
+*&amp;---------------------------------------------------------------------*
+REPORT z_a_object_check_version.
+
+***==================================================================***
+**                         SELECTION-SCREEN                           **
+***==================================================================***
+
+&quot; -----------------------------------------------------------
+&quot; Critère de sélection
+&quot; -----------------------------------------------------------
+
+TABLES : e071.
+
+SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE text-tb1.
+
+&quot; Objet
+SELECT-OPTIONS : s_object FOR e071-obj_name NO INTERVALS.
+
+SELECTION-SCREEN END OF BLOCK b1.
+
+***==================================================================***
+**                           INITIALIZATION                           **
+***==================================================================***
+INITIALIZATION.
+
+
+***==================================================================***
+**                         AT SELECTION-SCREEN                        **
+***==================================================================***
+AT SELECTION-SCREEN.
+
+
+***==================================================================***
+**                     AT SELECTION-SCREEN OUTPUT                     **
+***==================================================================***
+AT SELECTION-SCREEN OUTPUT.
+
+***==================================================================***
+**                AT SELECTION-SCREEN ON VALUE REQUEST                **
+***==================================================================***
+
+
+***==================================================================***
+**                         START-OF-SELECTION                         **
+***==================================================================***
+START-OF-SELECTION.
+
+  TYPES :
+    BEGIN OF ts_object_ot,
+      object                    TYPE e071-obj_name,
+      trkorr                    TYPE e071-trkorr,
+      trkorr_main               TYPE e070-strkorr,
+      as4text                   TYPE e07t-as4text,
+      transport_recette         TYPE xsdboolean,
+      transport_recette_icon    TYPE icon_d,
+      transport_production      TYPE xsdboolean,
+      transport_production_icon TYPE icon_d,
+    END OF   ts_object_ot.
+
+  TYPES : tt_object_ot TYPE STANDARD TABLE OF ts_object_ot
+                          WITH NON-UNIQUE KEY primary_key COMPONENTS object trkorr_main.
+
+***------------------------------------------------------------------***
+**                             TABLES                                 **
+***------------------------------------------------------------------***
+  DATA :
+      lt_object_ot TYPE tt_object_ot.
+
+***------------------------------------------------------------------***
+**                            INSTANCES                               **
+***------------------------------------------------------------------***
+  DATA :
+    lo_salv    TYPE REF TO cl_salv_table,
+    lo_column  TYPE REF TO cl_salv_column,
+    lo_columns TYPE REF TO cl_salv_columns.
+
+***------------------------------------------------------------------***
+**                            VARIABLES                               **
+***------------------------------------------------------------------***
+  DATA :
+    lv_strlen               TYPE lvc_outlen,
+    lv_object_length_output TYPE lvc_outlen.
+
+***==================================================================***
+**                             TRAITEMENT                             **
+***==================================================================***
+
+  &quot; -----------------------------------------------------------
+  &quot; Contrôle
+  &quot; -----------------------------------------------------------
+
+  IF s_object[] IS INITIAL.
+    &quot; Aucun Objet
+    &quot;&quot;  --&gt; Faut en mettre
+    MESSAGE s000(zbc) WITH &apos;Faut&apos; &apos;des&apos; &apos;objets&apos; &apos;!&apos; DISPLAY LIKE if_msg_output=&gt;msgtype_error. ##NO_TEXT
+    RETURN.
+
+  ENDIF.
+
+  &quot; -----------------------------------------------------------
+  &quot; Récupération des OTs constituant
+  &quot; -----------------------------------------------------------
+
+  &quot; Récupération des OTs contenant l&apos;Objet
+  SELECT
+    e071~obj_name AS object, e071~trkorr AS trkoor,
+    CASE WHEN main~strkorr NE @space THEN main~strkorr ELSE main~trkorr END AS trkorr_main
+    FROM e071 INNER JOIN e070 AS main ON e071~trkorr EQ main~trkorr
+   WHERE e071~obj_name IN @s_object[] AND e071~trkorr NOT LIKE &apos;DE1_P%&apos;
+    INTO TABLE @lt_object_ot.
+  IF sy-subrc NE 0.
+    &quot; Aucun OT sélectionné
+    &quot;&quot;  --&gt; Arrêt du traitement
+    MESSAGE s000(zbc) WITH text-e02 space space space DISPLAY LIKE if_msg_output=&gt;msgtype_error.
+    RETURN.
+
+  ENDIF.
+
+  &quot; Suppression inutile et doublon
+  DELETE lt_object_ot WHERE ( trkorr IS INITIAL OR trkorr_main IS INITIAL ).
+  SORT : lt_object_ot BY object trkorr_main.
+  DELETE ADJACENT DUPLICATES FROM lt_object_ot COMPARING object trkorr_main.
+
+  &quot; Tri par Ordre décroissant
+  SORT : lt_object_ot BY object trkorr_main DESCENDING.
+
+  &quot; -----------------------------------------------------------
+  &quot; Contrôle Version
+  &quot; -----------------------------------------------------------
+
+  LOOP AT lt_object_ot ASSIGNING FIELD-SYMBOL(&lt;lfs_s_object_ot&gt;).
+
+    &quot; Désignation OT // pas mis dans le SELECT au-dessus car condition sur OT / Tâche
+    SELECT SINGLE as4text FROM e07t
+            WHERE trkorr EQ @&lt;lfs_s_object_ot&gt;-trkorr_main AND langu EQ &apos;F&apos;
+             INTO @&lt;lfs_s_object_ot&gt;-as4text.
+
+    &quot; OT transporté en Recette ?
+    &lt;lfs_s_object_ot&gt;-transport_recette = zcl_transport_request=&gt;transport_request_check_import(
+      iv_trkorr    = &lt;lfs_s_object_ot&gt;-trkorr_main
+      iv_tarsystem = &apos;RE1&apos;                                  &quot;#EC NOTEXT
+    ).
+
+    &quot; Icône Transport Recette
+    &lt;lfs_s_object_ot&gt;-transport_recette_icon = SWITCH #( &lt;lfs_s_object_ot&gt;-transport_recette
+      WHEN abap_false     THEN text-e00
+      WHEN abap_true      THEN text-s00
+      WHEN abap_undefined THEN text-i00
+    ).
+
+    &quot; OT transporté en Production ?
+    &lt;lfs_s_object_ot&gt;-transport_production = zcl_transport_request=&gt;transport_request_check_import(
+      iv_trkorr    = &lt;lfs_s_object_ot&gt;-trkorr_main
+      iv_tarsystem = &apos;PE1&apos;                                  &quot;#EC NOTEXT
+    ).
+
+    &quot; Icône Transport Production
+    &lt;lfs_s_object_ot&gt;-transport_production_icon = SWITCH #( &lt;lfs_s_object_ot&gt;-transport_production
+      WHEN abap_false     THEN text-e00
+      WHEN abap_true      THEN text-s00
+      WHEN abap_undefined THEN text-i00
+    ).
+
+    &quot; Taille affichage - Objet
+    lv_strlen = strlen( &lt;lfs_s_object_ot&gt;-object ).
+    IF lv_strlen GT lv_object_length_output.
+      &quot; Taille objet plus grande
+      &quot;&quot;  --&gt; Utilisation de cette taille
+      lv_object_length_output = lv_strlen + 2.
+
+    ENDIF.
+
+  ENDLOOP.
+
+  &quot; -----------------------------------------------------------
+  &quot; Initialisation Affichage ALV
+  &quot; -----------------------------------------------------------
+
+  TRY.
+      &quot; Création instance ALV
+      cl_salv_table=&gt;factory(
+        EXPORTING
+          list_display = sy-batch
+        IMPORTING
+          r_salv_table = lo_salv
+        CHANGING
+          t_table      = lt_object_ot
+      ).
+
+      &quot; -----------------------------------------------------------
+      &quot; Customization
+      &quot; -----------------------------------------------------------
+
+      lo_salv-&gt;get_functions( )-&gt;set_all( abap_true ).
+
+      TRY.
+          &quot; Modification FieldCat
+          lo_columns = lo_salv-&gt;get_columns( ).
+
+          TRY.
+              &quot; Tâche
+              lo_column = lo_columns-&gt;get_column( &apos;TRKORR&apos; ). &quot;#EC NOTEXT
+              lo_column-&gt;set_visible( abap_false ).
+
+            CATCH : cx_salv_not_found, cx_salv_data_error.
+              &quot; Une erreur est survenue
+              &quot;&quot;  --&gt; Tant pis ...
+          ENDTRY.
+
+          TRY.
+              &quot; OT
+              lo_column = lo_columns-&gt;get_column( &apos;TRKORR_MAIN&apos; ). &quot;#EC NOTEXT
+              lo_column-&gt;set_output_length( 10 ).
+
+            CATCH : cx_salv_not_found, cx_salv_data_error.
+              &quot; Une erreur est survenue
+              &quot;&quot;  --&gt; Tant pis ...
+          ENDTRY.
+
+          TRY.
+              &quot; Récupération de la Colonne &quot;OBJECT&quot; - Nom d&apos;Objet
+              lo_column = lo_columns-&gt;get_column( &apos;OBJECT&apos; ). &quot;#EC NOTEXT
+              lo_column-&gt;set_output_length( lv_object_length_output ).
+
+            CATCH : cx_salv_not_found, cx_salv_data_error.
+              &quot; Une erreur est survenue
+              &quot;&quot;  --&gt; Tant pis ...
+
+          ENDTRY.
+
+          TRY.
+              &quot; Indicateur Transport Recette
+              lo_column = lo_columns-&gt;get_column( &apos;TRANSPORT_RECETTE&apos; ). &quot;#EC NOTEXT
+              lo_column-&gt;set_visible( abap_false ).
+
+            CATCH : cx_salv_not_found, cx_salv_data_error.
+              &quot; Une erreur est survenue
+              &quot;&quot;  --&gt; Tant pis ...
+          ENDTRY.
+*
+          TRY.
+              &quot; Icone Transport Recette
+              lo_column = lo_columns-&gt;get_column( &apos;TRANSPORT_RECETTE_ICON&apos; ). &quot;#EC NOTEXT
+              lo_column-&gt;set_output_length( &apos;9&apos; ).
+              lo_column-&gt;set_long_text( CONV #( text-tre ) ).
+              lo_column-&gt;set_short_text( CONV #( text-tre ) ).
+              lo_column-&gt;set_medium_text( CONV #( text-tre ) ).
+
+            CATCH : cx_salv_not_found, cx_salv_data_error.
+              &quot; Une erreur est survenue
+              &quot;&quot;  --&gt; Tant pis ...
+          ENDTRY.
+
+          TRY.
+              &quot; Indicateur Transport Production
+              lo_column = lo_columns-&gt;get_column( &apos;TRANSPORT_PRODUCTION&apos; ). &quot;#EC NOTEXT
+              lo_column-&gt;set_visible( abap_false ).
+
+            CATCH : cx_salv_not_found, cx_salv_data_error.
+              &quot; Une erreur est survenue
+              &quot;&quot;  --&gt; Tant pis ...
+          ENDTRY.
+
+          TRY.
+              &quot; Icone Transport Production
+              lo_column = lo_columns-&gt;get_column( &apos;TRANSPORT_PRODUCTION_ICON&apos; ). &quot;#EC NOTEXT
+              lo_column-&gt;set_output_length( &apos;9&apos; ).
+              lo_column-&gt;set_long_text( CONV #( text-tpr ) ).
+              lo_column-&gt;set_short_text( CONV #( text-tpr ) ).
+              lo_column-&gt;set_medium_text( CONV #( text-tpr ) ).
+
+            CATCH : cx_salv_not_found, cx_salv_data_error.
+              &quot; Une erreur est survenue
+              &quot;&quot;  --&gt; Tant pis ...
+          ENDTRY.
+
+        CATCH cx_root.
+          &quot; Une erreur est survenue
+
+      ENDTRY.
+
+      &quot; -----------------------------------------------------------
+      &quot; Affichage
+      &quot; -----------------------------------------------------------
+
+      &quot; Affichage
+      lo_salv-&gt;display( ).
+
+    CATCH cx_salv_msg.
+
+  ENDTRY.
+
+
+END-OF-SELECTION.</source>
+ </PROG>
+</nugget>
