@@ -1,0 +1,1577 @@
+<?xml version="1.0" encoding="utf-8"?>
+<nugget name="UTILITIES">
+ <PROG NAME="ZLOCAL_FIND_STRUCT_BY_COMP" VARCL="X" SUBC="1" APPL="*" RSTAT="T" RMAND="200" RLOAD="F" FIXPT="X" UCCHECK="X">
+  <textPool>
+   <language SPRAS="F">
+    <textElement ID="R" ENTRY="Recherche de Structure par composant" LENGTH="36 "/>
+    <textElement ID="S" KEY="P_STRICT" ENTRY="        Mode Strict" LENGTH="19 "/>
+    <textElement ID="S" KEY="S_COMP" ENTRY="D       ." LENGTH="9 "/>
+    <textElement ID="S" KEY="S_TAB" ENTRY="D       ." LENGTH="9 "/>
+   </language>
+  </textPool>
+  <source>*&amp;---------------------------------------------------------------------*
+*&amp; Report  ZLOCAL_FIND_STRUCT_BY_COMP
+*&amp;
+*&amp;---------------------------------------------------------------------*
+*&amp;
+*&amp; Permet de trouver une structure contenant uniquement les champs saisis
+*&amp;---------------------------------------------------------------------*
+
+REPORT zlocal_find_struct_by_comp.
+
+TABLES : dd03l.
+
+SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE text-tb1.
+
+&quot; Liste des Composants
+SELECT-OPTIONS : s_comp FOR dd03l-fieldname OBLIGATORY.
+
+&quot; Liste des noms
+SELECT-OPTIONS : s_tab  FOR dd03l-tabname.
+
+SELECTION-SCREEN END OF BLOCK b1.
+
+SELECTION-SCREEN BEGIN OF BLOCK b2 WITH FRAME TITLE text-tb2.
+
+&quot; Mode Strict
+PARAMETERS : p_strict TYPE flag DEFAULT &apos;X&apos;.
+
+SELECTION-SCREEN END OF BLOCK b2.
+
+START-OF-SELECTION.
+
+***------------------------------------------------------------------***
+**                              TYPES                                 **
+***------------------------------------------------------------------***
+  TYPES :
+    BEGIN OF ty_tabname_line,
+      tabname TYPE dd03l-tabname,
+    END OF   ty_tabname_line.
+
+  TYPES : ty_t_tabname_line TYPE STANDARD TABLE OF ty_tabname_line
+                  WITH NON-UNIQUE KEY primary_key COMPONENTS tabname.
+
+  TYPES :
+    BEGIN OF ty_dd03l,
+      tabname   TYPE dd03l-tabname,
+      fieldname TYPE dd03l-fieldname,
+    END OF   ty_dd03l.
+
+  TYPES : ty_t_dd03l TYPE SORTED TABLE OF ty_dd03l
+                      WITH NON-UNIQUE KEY primary_key COMPONENTS tabname fieldname.
+
+***------------------------------------------------------------------***
+**                             TABLES                                 **
+***------------------------------------------------------------------***
+  DATA :
+    lt_dd03l        TYPE ty_t_dd03l,
+    lt_tabname_line TYPE ty_t_tabname_line.
+
+***------------------------------------------------------------------***
+**                            VARIABLES                               **
+***------------------------------------------------------------------***
+  DATA :
+    lv_count            TYPE i,
+    lv_eligible         TYPE flag,
+    lv_component_number TYPE i.
+
+***==================================================================***
+**                           TRAITEMENT                               **
+***==================================================================***
+
+  &quot; -----------------------------------------------------------
+  &quot; Contrôle pré-traitement
+  &quot; -----------------------------------------------------------
+
+  &quot; Recherche présence de critère &quot;pattern&quot;
+  READ TABLE s_comp WITH KEY option = &apos;CP&apos;
+                TRANSPORTING NO FIELDS.
+  IF sy-subrc EQ 0.
+    &quot; Recherche pattern
+    &quot;&quot;  --&gt; Force sans le mode Strict
+    CLEAR : p_strict.
+
+  ENDIF.
+
+  &quot; -----------------------------------------------------------
+  &quot; Récupération des structures
+  &quot; -----------------------------------------------------------
+
+  IF p_strict EQ abap_true.
+    &quot; Mode &quot;Strict&quot;
+    lv_component_number = lines( s_comp[] ).
+
+    SELECT DISTINCT tabname FROM dd03l
+                           WHERE tabname   IN @s_tab[]
+                             AND fieldname IN @s_comp[]
+                             AND position  LE @lv_component_number
+                      INTO TABLE @lt_dd03l.
+
+  ELSE.
+    &quot; Mode &quot;tolérant&quot;
+    SELECT DISTINCT tabname FROM dd03l
+                           WHERE tabname   IN @s_tab[]
+                             AND fieldname IN @s_comp[]
+                      INTO TABLE @lt_dd03l.
+
+  ENDIF.
+  IF sy-subrc EQ 0.
+    SELECT tabname, fieldname FROM dd03l
+                FOR ALL ENTRIES IN @lt_dd03l
+                             WHERE tabname EQ @lt_dd03l-tabname
+                        INTO TABLE @lt_dd03l.
+
+  ENDIF.
+  IF sy-subrc NE 0.
+    RETURN.
+
+  ENDIF.
+
+  &quot; -----------------------------------------------------------
+  &quot; Affichage du résultat
+  &quot; -----------------------------------------------------------
+
+  lt_tabname_line = CORRESPONDING #( lt_dd03l MAPPING tabname = tabname ).
+  SORT lt_tabname_line BY tabname. DELETE ADJACENT DUPLICATES FROM lt_tabname_line.
+
+  LOOP AT lt_tabname_line ASSIGNING FIELD-SYMBOL(&lt;lfs_s_tabname&gt;).
+
+    CLEAR : lv_count.
+
+    &quot; Récupération position première itération
+    READ TABLE lt_dd03l WITH KEY tabname = &lt;lfs_s_tabname&gt;-tabname
+                    TRANSPORTING NO FIELDS BINARY SEARCH.
+    IF sy-subrc NE 0.
+      &quot; Aucune correspondance
+      &quot;&quot;  --&gt; Suppression de l&apos;entrée
+      DELETE lt_tabname_line USING KEY loop_key.
+
+      &quot;&quot;  --&gt; Passe à l&apos;itération suivante
+      CONTINUE.
+
+    ENDIF.
+
+    &quot; Parcours chaque champ de la structure
+    LOOP AT lt_dd03l ASSIGNING FIELD-SYMBOL(&lt;lfs_s_dd03l&gt;)
+                          FROM sy-tabix.
+
+      IF &lt;lfs_s_dd03l&gt;-tabname NE &lt;lfs_s_tabname&gt;-tabname.
+        &quot; On change de structure
+        &quot;&quot;  --&gt; Arrêt de la boucle
+        EXIT.
+
+      ENDIF.
+
+      IF &lt;lfs_s_dd03l&gt;-fieldname IN s_comp[].
+        &quot; Champ présent dans la liste
+        &quot;&quot;  --&gt; Initialisation flag éligible
+        lv_eligible = abap_true.
+        ADD 1 TO lv_count.
+
+      ELSE.
+        &quot; Champ non présent
+        &quot;&quot;  --&gt; Initialisation indicateur flag non éligible
+        lv_eligible = abap_false.
+
+        &quot;&quot;  --&gt; Arrêt de la boucle
+        EXIT.
+
+      ENDIF.
+
+    ENDLOOP.
+
+    IF  lv_eligible EQ abap_true
+    AND lv_count    EQ lv_component_number.
+      &quot; Structure / Table eligible
+      &quot;&quot;  --&gt; Conserve l&apos;entrée
+
+    ELSE.
+      &quot; Structure / Table ne correspond pas intégralement
+      IF p_strict EQ abap_true.
+        &quot; Mode Strict
+        &quot;&quot;  --&gt; Supprime l&apos;entrée
+        DELETE lt_dd03l WHERE tabname EQ &lt;lfs_s_tabname&gt;-tabname.
+        DELETE lt_tabname_line USING KEY loop_key.
+        CONTINUE.
+
+      ENDIF.
+
+    ENDIF.
+
+  ENDLOOP.
+
+  &quot; -----------------------------------------------------------
+  &quot; Affichage du résultat
+  &quot; -----------------------------------------------------------
+
+  TRY.
+      &quot; Génération instance SALV
+      cl_salv_table=&gt;factory(
+        EXPORTING
+          list_display   = sy-batch
+        IMPORTING
+          r_salv_table   = DATA(lo_salv_table)
+        CHANGING
+          t_table        = lt_tabname_line
+      ).
+
+      &quot; Affichage du résultat
+      lo_salv_table-&gt;display( ).
+
+    CATCH cx_salv_msg.
+
+  ENDTRY.</source>
+ </PROG>
+ <CLAS CLSNAME="ZCL_ARCHIVE_UTIL" VERSION="1" LANGU="F" DESCRIPT="Archive - Utilitaire" CATEGORY="00" EXPOSURE="2" STATE="1" RELEASE="0" CLSFINAL="X" CLSCCINCL="X" FIXPT="X" UNICODE="X" CLSBCCAT="00" DURATION_TYPE="0 " RISK_LEVEL="0 " ZSAPLINK_PLUGIN_MAJOR_VERSION="0 " ZSAPLINK_PLUGIN_MINOR_VERSION="1 " ZSAPLINK_PLUGIN_BUILD_VERSION="0 " ZSAPLINK_PLUGIN_INFO1="ZSAPLINK_CLASS is part of the main ZSAPLINK project --&gt; This plugin found there instead of ZSAPLINK_PLUGINS projects" ZSAPLINK_PLUGIN_INFO2="SAPLINK homepage: https://www.assembla.com/spaces/saplink/wiki" ZSAPLINK_PLUGIN_INFO3="Download from https://www.assembla.com/code/saplink/subversion/nodes" ZSAPLINK_PLUGIN_INFO4="and navigate to:  trunk -&gt; core -&gt; ZSAPLINK -&gt; CLAS -&gt; ZSAPLINK_CLASS.slnk">
+  <types CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="TT_LTDXDATA" VERSION="1" LANGU="F" DESCRIPT="FC - Type de table" EXPOSURE="0" STATE="1" EDITORDER="1 " TYPTYPE="4" SRCROW1="4 " SRCCOLUMN1="4 " SRCROW2="4 " SRCCOLUMN2="104 " TYPESRC_LENG="0 " TYPESRC="tt_ltdxdata TYPE STANDARD TABLE OF ltdxdata WITH NON-UNIQUE KEY primary_key COMPONENTS key1 key2 key3
+"/>
+  <types CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="TS_VARIANT_FC" VERSION="1" LANGU="F" DESCRIPT="Variante / Composants afficher - Structure" EXPOSURE="0" STATE="1" EDITORDER="2 " TYPTYPE="4" SRCROW1="6 " SRCCOLUMN1="4 " SRCROW2="10 " SRCCOLUMN2="25 " TYPESRC_LENG="0 " TYPESRC="BEGIN OF ts_variant_fc,
+      variant_key  TYPE rsvarkey,
+      not_exist    TYPE xsdboolean,
+      t_dbfieldcat TYPE zcl_archive_util=&gt;tt_ltdxdata,
+    END OF   ts_variant_fc
+"/>
+  <types CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="TT_VARIANT_FC" VERSION="1" LANGU="F" DESCRIPT="Variante / Composants afficher - Type de table" EXPOSURE="0" STATE="1" EDITORDER="3 " TYPTYPE="4" SRCROW1="12 " SRCCOLUMN1="4 " SRCROW2="13 " SRCCOLUMN2="71 " TYPESRC_LENG="0 " TYPESRC="tt_variant_fc TYPE SORTED TABLE OF ts_variant_fc
+                  WITH NON-UNIQUE KEY primary_key COMPONENTS variant_key
+"/>
+  <types CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="TS_AIND_STR2" VERSION="1" LANGU="F" DESCRIPT="Archive / Table d&apos;archive - Structure" EXPOSURE="0" STATE="1" EDITORDER="4 " TYPTYPE="4" SRCROW1="15 " SRCCOLUMN1="4 " SRCROW2="19 " SRCCOLUMN2="24 " TYPESRC_LENG="0 " TYPESRC="BEGIN OF ts_aind_str2,
+      archindex TYPE aind_str2-archindex,
+      gentab    TYPE aind_str2-gentab,
+      not_exist TYPE xsdboolean,
+    END OF   ts_aind_str2
+"/>
+  <types CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="TT_AIND_STR2" VERSION="1" LANGU="F" DESCRIPT="Archive / Table d&apos;archive - Type de table" EXPOSURE="0" STATE="1" EDITORDER="5 " TYPTYPE="4" SRCROW1="21 " SRCCOLUMN1="4 " SRCROW2="22 " SRCCOLUMN2="69 " TYPESRC_LENG="0 " TYPESRC="tt_aind_str2 TYPE SORTED TABLE OF ts_aind_str2
+                  WITH NON-UNIQUE KEY primary_key COMPONENTS archindex
+"/>
+  <types CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="TS_AIND_STR3" VERSION="1" LANGU="F" DESCRIPT="Archive / Composantes tables archivées  - Structure" EXPOSURE="0" STATE="1" EDITORDER="6 " TYPTYPE="4" SRCROW1="24 " SRCCOLUMN1="4 " SRCROW2="31 " SRCCOLUMN2="24 " TYPESRC_LENG="0 " TYPESRC="BEGIN OF ts_aind_str3,
+      archindex        TYPE aind_str3-archindex,
+      reftab           TYPE aind_str3-reftab,
+      reffield         TYPE aind_str3-reffield,
+      rollname         TYPE dd03l-rollname,
+      not_exist        TYPE xsdboolean,
+      tabkey_generated TYPE xsdboolean,
+    END OF   ts_aind_str3
+"/>
+  <types CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="TT_AIND_STR3" VERSION="1" LANGU="F" DESCRIPT="Archive / Composantes tables archivées  - Type de table" EXPOSURE="0" STATE="1" EDITORDER="7 " TYPTYPE="4" SRCROW1="33 " SRCCOLUMN1="4 " SRCROW2="34 " SRCCOLUMN2="85 " TYPESRC_LENG="0 " TYPESRC="tt_aind_str3 TYPE SORTED TABLE OF ts_aind_str3
+                  WITH NON-UNIQUE KEY primary_key COMPONENTS archindex reftab reffield
+"/>
+  <types CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="TS_ARCHIVE_REFTAB" VERSION="1" LANGU="F" DESCRIPT="Archive / Table archivées - Structure" EXPOSURE="0" STATE="1" EDITORDER="8 " TYPTYPE="4" SRCROW1="36 " SRCCOLUMN1="4 " SRCROW2="39 " SRCCOLUMN2="29 " TYPESRC_LENG="0 " TYPESRC="BEGIN OF ts_archive_reftab,
+      archindex TYPE aind_str3-archindex,
+      reftab    TYPE aind_str3-reftab,
+    END OF   ts_archive_reftab
+"/>
+  <types CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="TT_ARCHIVE_REFTAB" VERSION="1" LANGU="F" DESCRIPT="Archive / Table archivées - Type de table" EXPOSURE="0" STATE="1" EDITORDER="9 " TYPTYPE="4" SRCROW1="41 " SRCCOLUMN1="4 " SRCROW2="42 " SRCCOLUMN2="76 " TYPESRC_LENG="0 " TYPESRC="tt_archive_reftab TYPE SORTED TABLE OF ts_archive_reftab
+                  WITH NON-UNIQUE KEY primary_key COMPONENTS archindex reftab
+"/>
+  <types CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="TS_TABKEY" VERSION="1" LANGU="F" DESCRIPT="Clef de table - Structure" EXPOSURE="0" STATE="1" EDITORDER="10 " TYPTYPE="4" SRCROW1="44 " SRCCOLUMN1="4 " SRCROW2="47 " SRCCOLUMN2="21 " TYPESRC_LENG="0 " TYPESRC="BEGIN OF ts_tabkey,
+      tabname     TYPE string,
+      o_key       TYPE REF TO data,
+    END OF   ts_tabkey
+"/>
+  <types CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="TT_TABKEY" VERSION="1" LANGU="F" DESCRIPT="Clef de table - Type de table" EXPOSURE="0" STATE="1" EDITORDER="11 " TYPTYPE="4" SRCROW1="49 " SRCCOLUMN1="4 " SRCROW2="50 " SRCCOLUMN2="70 " TYPESRC_LENG="0 " TYPESRC="tt_tabkey TYPE SORTED TABLE OF ts_tabkey
+                     WITH NON-UNIQUE KEY primary_key COMPONENTS tabname
+"/>
+  <types CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="TS_FIELD_DISPLAYED" VERSION="1" LANGU="F" DESCRIPT="FC - Structure" EXPOSURE="0" STATE="1" EDITORDER="12 " TYPTYPE="4" SRCROW1="52 " SRCCOLUMN1="4 " SRCROW2="56 " SRCCOLUMN2="30 " TYPESRC_LENG="0 " TYPESRC="BEGIN OF ts_field_displayed,
+      name          TYPE string,
+      exist         TYPE xsdboolean,
+      archive_table TYPE string,
+    END OF   ts_field_displayed
+"/>
+  <types CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="TT_FIELD_DISPLAYED" VERSION="1" LANGU="F" DESCRIPT="FC - Type de table" EXPOSURE="0" STATE="1" EDITORDER="13 " TYPTYPE="4" SRCROW1="58 " SRCCOLUMN1="4 " SRCROW2="59 " SRCCOLUMN2="64 " TYPESRC_LENG="0 " TYPESRC="tt_field_displayed TYPE SORTED TABLE OF ts_field_displayed
+                  WITH NON-UNIQUE KEY primary_key COMPONENTS name
+"/>
+  <types CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="TS_CAN_USE_OPTI" VERSION="1" LANGU="F" DESCRIPT="Utilisation traitement optimisé - Structure" EXPOSURE="0" STATE="1" EDITORDER="14 " TYPTYPE="4" SRCROW1="61 " SRCCOLUMN1="4 " SRCROW2="65 " SRCCOLUMN2="27 " TYPESRC_LENG="0 " TYPESRC="BEGIN OF ts_can_use_opti,
+      varkey            TYPE rsvarkey,
+      archiveindex_list TYPE string,
+      eligible          TYPE xsdboolean,
+    END OF   ts_can_use_opti
+"/>
+  <types CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="TT_CAN_USE_OPTI" VERSION="1" LANGU="F" DESCRIPT="Utilisation traitement optimisé - Type de table" EXPOSURE="0" STATE="1" EDITORDER="15 " TYPTYPE="4" SRCROW1="67 " SRCCOLUMN1="4 " SRCROW2="68 " SRCCOLUMN2="84 " TYPESRC_LENG="0 " TYPESRC="tt_can_use_opti TYPE SORTED TABLE OF ts_can_use_opti
+                  WITH NON-UNIQUE KEY primary_key COMPONENTS varkey archiveindex_list
+"/>
+  <types CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="TS_BUFFER_DATA" VERSION="1" LANGU="F" DESCRIPT="Buffer" EXPOSURE="0" STATE="1" EDITORDER="16 " TYPTYPE="4" SRCROW1="70 " SRCCOLUMN1="4 " SRCROW2="76 " SRCCOLUMN2="26 " TYPESRC_LENG="0 " TYPESRC="BEGIN OF ts_buffer_data,
+      t_tabkey       TYPE zcl_archive_util=&gt;tt_tabkey,
+      t_aind_str2    TYPE zcl_archive_util=&gt;tt_aind_str2,
+      t_aind_str3    TYPE zcl_archive_util=&gt;tt_aind_str3,
+      t_variant_fc   TYPE zcl_archive_util=&gt;tt_variant_fc,
+      t_can_use_opti TYPE zcl_archive_util=&gt;tt_can_use_opti,
+    END OF   ts_buffer_data
+"/>
+  <localImplementation>*&quot;* use this source file for the definition and implementation of
+*&quot;* local helper classes, interface definitions and type
+*&quot;* declarations</localImplementation>
+  <localTypes>*&quot;* use this source file for any type of declarations (class
+*&quot;* definitions, interfaces or type declarations) you need for
+*&quot;* components in the private section</localTypes>
+  <localMacros>*&quot;* use this source file for any macro definitions you need
+*&quot;* in the implementation part of the class</localMacros>
+  <typeClasDef CLSNAME="ZCL_ARCHIVE_UTIL" TYPEGROUP="ZCL_ARCHIVE_UTIL" VERSION="1" TPUTYPE="1" IMPLICIT="X"/>
+  <attribute CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="MCR_ARCHINDEX_FBL3N" VERSION="1" LANGU="F" EXPOSURE="2" STATE="1" EDITORDER="1 " ATTDECLTYP="1" ATTRDONLY="X" ATTEXPVIRT="0" TYPTYPE="1" TYPE="ZAIND_DESC_RANGE_T" SRCROW1="0 " SRCCOLUMN1="0 " SRCROW2="0 " SRCCOLUMN2="0 " TYPESRC_LENG="0 "/>
+  <attribute CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="MC_ARCHIVEINDEX" VERSION="1" LANGU="F" EXPOSURE="0" STATE="1" EDITORDER="3 " ATTDECLTYP="2" ATTEXPVIRT="0" TYPTYPE="4" SRCROW1="87 " SRCCOLUMN1="4 " SRCROW2="91 " SRCCOLUMN2="25 " TYPESRC_LENG="256 " TYPESRC="BEGIN OF mc_archiveindex,
+      fi_doc_001 TYPE aind_desc VALUE &apos;SAP_FI_DOC_001&apos; ##NO_TEXT,
+      fi_doc_002 TYPE aind_desc VALUE &apos;SAP_FI_DOC_002&apos; ##NO_TEXT,
+      fi_doc_003 TYPE aind_desc VALUE &apos;SAP_FI_DOC_003&apos; ##NO_TEXT,
+    END OF mc_archiveindex
+"/>
+  <attribute CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="MC_REPID" VERSION="1" LANGU="F" EXPOSURE="0" STATE="1" EDITORDER="1 " ATTDECLTYP="2" ATTEXPVIRT="0" TYPTYPE="4" SRCROW1="79 " SRCCOLUMN1="4 " SRCROW2="81 " SRCCOLUMN2="18 " TYPESRC_LENG="96 " TYPESRC="BEGIN OF mc_repid,
+      fbl3n TYPE sy-repid VALUE &apos;RFITEMGL&apos; ##NO_TEXT,
+    END OF mc_repid
+"/>
+  <attribute CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="MC_VARIABLE" VERSION="1" LANGU="F" EXPOSURE="0" STATE="1" EDITORDER="2 " ATTDECLTYP="2" ATTEXPVIRT="0" TYPTYPE="4" SRCROW1="83 " SRCCOLUMN1="4 " SRCROW2="85 " SRCCOLUMN2="21 " TYPESRC_LENG="117 " TYPESRC="BEGIN OF mc_variable,
+      variant_fbl3n TYPE string VALUE &apos;(RFITEMGL)PA_VARI&apos; ##NO_TEXT,
+    END OF mc_variable
+"/>
+  <attribute CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="MO_HARDCODE" VERSION="1" LANGU="F" EXPOSURE="0" STATE="1" EDITORDER="6 " ATTDECLTYP="1" ATTEXPVIRT="0" TYPTYPE="3" TYPE="ZCL_HARDCODE" SRCROW1="0 " SRCCOLUMN1="0 " SRCROW2="0 " SRCCOLUMN2="0 " TYPESRC_LENG="0 "/>
+  <attribute CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="MS_BUFFER_DATA" VERSION="1" LANGU="F" EXPOSURE="0" STATE="1" EDITORDER="5 " ATTDECLTYP="1" ATTEXPVIRT="0" TYPTYPE="1" TYPE="ZCL_ARCHIVE_UTIL=&gt;TS_BUFFER_DATA" SRCROW1="0 " SRCCOLUMN1="0 " SRCROW2="0 " SRCCOLUMN2="0 " TYPESRC_LENG="0 "/>
+  <attribute CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="MV_OPTI_FBL3N" VERSION="1" LANGU="F" EXPOSURE="0" STATE="1" EDITORDER="4 " ATTDECLTYP="1" ATTEXPVIRT="0" TYPTYPE="1" TYPE="XSDBOOLEAN" SRCROW1="0 " SRCCOLUMN1="0 " SRCROW2="0 " SRCCOLUMN2="0 " TYPESRC_LENG="0 "/>
+  <method CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="CAN_USE_ARCHIVE_OPTIMIZATION" VERSION="1" LANGU="F" DESCRIPT="Peux-t-on utiliser traitement optimisé ?" EXPOSURE="2" STATE="1" EDITORDER="2 " DISPID="0 " MTDTYPE="0" MTDDECLTYP="1" BCMTDCAT="00" BCMTDSYN="0">
+   <parameter CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="CAN_USE_ARCHIVE_OPTIMIZATION" SCONAME="IS_VARKEY" VERSION="1" LANGU="F" DESCRIPT="Structure de transfert pour nom de programme et variante" CMPTYPE="1" MTDTYPE="0" EDITORDER="1 " DISPID="0 " PARDECLTYP="0" PARPASSTYP="1" TYPTYPE="1" TYPE="RSVARKEY"/>
+   <parameter CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="CAN_USE_ARCHIVE_OPTIMIZATION" SCONAME="IR_ARCHINDEX" VERSION="1" LANGU="F" DESCRIPT="Range - AIND_DESC" CMPTYPE="1" MTDTYPE="0" EDITORDER="2 " DISPID="0 " PARDECLTYP="0" PARPASSTYP="1" TYPTYPE="1" TYPE="ZAIND_DESC_RANGE_T"/>
+   <parameter CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="CAN_USE_ARCHIVE_OPTIMIZATION" SCONAME="RV_ELIGIBLE" VERSION="1" LANGU="F" DESCRIPT="Eligible traitement optimisé" CMPTYPE="1" MTDTYPE="0" EDITORDER="3 " DISPID="0 " PARDECLTYP="3" PARPASSTYP="0" TYPTYPE="1" TYPE="XSDBOOLEAN"/>
+   <source>METHOD can_use_archive_optimization.
+
+***------------------------------------------------------------------***
+**                             TABLES                                 **
+***------------------------------------------------------------------***
+  DATA :
+    lt_aind_str2       TYPE zcl_archive_util=&gt;tt_aind_str2,
+    lt_field_displayed TYPE zcl_archive_util=&gt;tt_field_displayed.
+
+***------------------------------------------------------------------***
+**                            STRUCTURE                               **
+***------------------------------------------------------------------***
+  DATA :
+    ls_variant_fc TYPE zcl_archive_util=&gt;ts_variant_fc.
+
+***------------------------------------------------------------------***
+**                            INSTANCES                               **
+***------------------------------------------------------------------***
+  DATA :
+        lo_structdescr TYPE REF TO cl_abap_structdescr.
+
+***------------------------------------------------------------------***
+**                            VARIABLES                               **
+***------------------------------------------------------------------***
+  DATA :
+    lv_archindex_concat    TYPE string,
+    lv_all_field_displayed TYPE xsdboolean.
+
+***==================================================================***
+**                             TRAITEMENT                             **
+***==================================================================***
+
+  &quot; -----------------------------------------------------------
+  &quot; Récupération nécessité en Buffer
+  &quot; -----------------------------------------------------------
+
+  &quot; Concaténation en 1 ligne des Archives
+  lv_archindex_concat = concat_lines_of( ir_archindex ).
+
+  &quot; Récupération entrée correspondance en Buffer
+  READ TABLE zcl_archive_util=&gt;ms_buffer_data-t_can_use_opti
+  WITH TABLE KEY varkey            = is_varkey
+                 archiveindex_list = lv_archindex_concat ASSIGNING FIELD-SYMBOL(&lt;lfs_s_can_use_opti&gt;).
+  IF sy-subrc EQ 0.
+    &quot; Correspondance trouvée
+    &quot;&quot;  --&gt; Retourne l&apos;indicateur
+    rv_eligible = &lt;lfs_s_can_use_opti&gt;-eligible.
+    RETURN.
+
+  ELSE.
+    &quot; Pas de correspondance en Buffer
+    &quot;&quot;  --&gt; Création nouvelle entrée
+    INSERT VALUE #( varkey = is_varkey archiveindex_list = lv_archindex_concat )
+      INTO TABLE zcl_archive_util=&gt;ms_buffer_data-t_can_use_opti ASSIGNING &lt;lfs_s_can_use_opti&gt;.
+
+  ENDIF.
+
+  &quot; -----------------------------------------------------------
+  &quot; Récupération des champs à afficher (de la Variante)
+  &quot; -----------------------------------------------------------
+
+  &quot; Récupération des champs affichés par la Variante
+  zcl_archive_util=&gt;_load_from_buffer_data(
+    EXPORTING
+      is_varkey     = is_varkey
+    IMPORTING
+      es_variant_fc = ls_variant_fc
+  ).
+  IF ls_variant_fc-t_dbfieldcat[] IS INITIAL.
+    &quot; Variante inexistante // Aucun champ a afficher
+    &quot;&quot;  --&gt; Arrêt du traitement
+    RETURN.
+
+  ENDIF.
+
+  &quot; -----------------------------------------------------------
+  &quot; Récupération des tables archivées
+  &quot; -----------------------------------------------------------
+
+  &quot; Récupération des tables Archivées
+  zcl_archive_util=&gt;_load_from_buffer_data(
+    EXPORTING
+      ir_archindex = ir_archindex
+    IMPORTING
+      et_aind_str2 = lt_aind_str2
+  ).
+  IF lt_aind_str2[] IS INITIAL.
+    &quot; Arrêt du traitement
+    RETURN.
+
+  ENDIF.
+
+  &quot; -----------------------------------------------------------
+  &quot; Comparaisons des champs disponibles dans les Archives
+  &quot; -----------------------------------------------------------
+
+  &quot; Initalisation table temporaire de contrôle
+  lt_field_displayed = CORRESPONDING #( ls_variant_fc-t_dbfieldcat MAPPING name = key1 ).
+  DELETE ADJACENT DUPLICATES FROM lt_field_displayed COMPARING name.
+
+  &quot; Comparaison des champs à afficher et ceux disponibles dans les Archives
+  LOOP AT lt_aind_str2 ASSIGNING FIELD-SYMBOL(&lt;lfs_s_aind_str2&gt;).
+
+    &quot; Récupération composition de la structure de la table
+    lo_structdescr ?= cl_abap_structdescr=&gt;describe_by_name( &lt;lfs_s_aind_str2&gt;-gentab ).
+
+    &quot; Parcours chaque champ à afficher
+    LOOP AT ls_variant_fc-t_dbfieldcat ASSIGNING FIELD-SYMBOL(&lt;lfs_s_dbfieldcat&gt;).
+
+      &quot; Récupération entrée table intérmédiaire - Champ exite en archive ?
+      READ TABLE lt_field_displayed WITH TABLE KEY name = &lt;lfs_s_dbfieldcat&gt;-key1
+                                         ASSIGNING FIELD-SYMBOL(&lt;lfs_s_field_displayed&gt;).
+      IF sy-subrc NE 0.
+        &quot; Entrée inexistante // Ne devrait pas se produire
+        &quot;&quot;  --&gt; Création nouvelle entrée
+        INSERT VALUE #(
+          name = &lt;lfs_s_dbfieldcat&gt;-key1
+        ) INTO TABLE lt_field_displayed ASSIGNING &lt;lfs_s_field_displayed&gt;.
+
+      ENDIF.
+
+      &quot; Le champ existe-t-il dans cette structure d&apos;Archive ?
+      READ TABLE lo_structdescr-&gt;components WITH KEY name = &lt;lfs_s_dbfieldcat&gt;-key1
+                                        TRANSPORTING NO FIELDS.
+      IF sy-subrc EQ 0.
+        &quot; Champ existant
+        &quot;&quot;  --&gt; Initialisation données correspondante
+        &lt;lfs_s_field_displayed&gt;-exist         = abap_true.
+*        &lt;lfs_s_field_displayed&gt;-archive_table = &lt;lfs_s_aind_str2&gt;-gentab.
+
+      ENDIF.
+
+      &quot; Recherche si présence d&apos;au moins un champ non encore trouvé
+      IF NOT line_exists( lt_field_displayed[ exist = abap_false ] ).
+        &quot; Tous les champs ont été déterminé
+        &quot;&quot;  --&gt; Arrêt des boucles
+        lv_all_field_displayed = abap_true.
+        EXIT.
+
+      ENDIF.
+
+    ENDLOOP.
+
+    IF lv_all_field_displayed EQ abap_true.
+      &quot; Tous les champs à afficher sont disponibles
+      &quot;&quot;  --&gt; Arrêt de la boucle
+      EXIT.
+
+    ENDIF.
+
+  ENDLOOP.
+
+  &quot; -----------------------------------------------------------
+  &quot; Récupération des champs disponibles dans les Archives
+  &quot; -----------------------------------------------------------
+
+  &quot; Tous les champs demandées existe-t-il ?
+  &lt;lfs_s_can_use_opti&gt;-eligible = xsdbool( NOT line_exists( lt_field_displayed[ exist = abap_false ] ) ).
+  rv_eligible = &lt;lfs_s_can_use_opti&gt;-eligible.
+
+ENDMETHOD.</source>
+  </method>
+  <method CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="CLASS_CONSTRUCTOR" VERSION="1" LANGU="F" EXPOSURE="2" STATE="1" EDITORDER="1 " DISPID="0 " MTDTYPE="2" MTDDECLTYP="1" BCMTDCAT="00" BCMTDSYN="0">
+   <source>METHOD class_constructor.
+
+***==================================================================***
+**                             TRAITEMENT                             **
+***==================================================================***
+
+  &quot; -----------------------------------------------------------
+  &quot; Initialisation Range utilisé par la FBL3N
+  &quot; -----------------------------------------------------------
+
+  zcl_archive_util=&gt;mcr_archindex_fbl3n = VALUE #(
+    ( sign = if_trba_selection_c=&gt;gc_sign_incl option = if_trba_selection_c=&gt;gc_option_eq low = mc_archiveindex-fi_doc_001 )
+    ( sign = if_trba_selection_c=&gt;gc_sign_incl option = if_trba_selection_c=&gt;gc_option_eq low = mc_archiveindex-fi_doc_002 )
+    ( sign = if_trba_selection_c=&gt;gc_sign_incl option = if_trba_selection_c=&gt;gc_option_eq low = mc_archiveindex-fi_doc_003 )
+  ).
+
+
+  TRY.
+      &quot; -----------------------------------------------------------
+      &quot; Récupération HC
+      &quot; -----------------------------------------------------------
+
+      &quot; Récupération instance HC
+      zcl_archive_util=&gt;mo_hardcode = zcl_hardcode=&gt;get_instance( &apos;ZCL_ARCHIVE_UTIL&apos; ##NO_TEXT ).
+
+      TRY.
+          &quot; Optimisation activée ?
+          zcl_archive_util=&gt;mv_opti_fbl3n = xsdbool( zcl_archive_util=&gt;mo_hardcode-&gt;attribute_value_get(
+              iv_parameter_name = &apos;CONFIGURATION&apos; ##NO_TEXT
+              iv_attribute_name = &apos;OPTIMIZATION&apos; ##NO_TEXT
+              iv_key1           = &apos;FBL3N&apos; ##NO_TEXT
+          )-key2 EQ abap_true ).
+
+        CATCH zcx_hardcode. ##NO_HANDLER
+          &quot; Erreur lecture HC
+          &quot;&quot;  --&gt; Tant pis ...
+
+      ENDTRY.
+
+    CATCH zcx_hardcode. ##NO_HANDLER
+      &quot; Erreur lecture HC
+      &quot;&quot;  --&gt; Tant pis ...
+
+  ENDTRY.
+
+ENDMETHOD.</source>
+  </method>
+  <method CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="PROCESS_FOR_FBL3N_OPTI" VERSION="1" LANGU="F" DESCRIPT="Archive - Finance - Lecture" EXPOSURE="2" STATE="1" EDITORDER="3 " DISPID="0 " MTDTYPE="0" MTDDECLTYP="1" BCMTDCAT="00" BCMTDSYN="0">
+   <parameter CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="PROCESS_FOR_FBL3N_OPTI" SCONAME="IS_ARCHIVEKEY" VERSION="1" LANGU="F" DESCRIPT="Archive Position" CMPTYPE="1" MTDTYPE="0" EDITORDER="1 " DISPID="0 " PARDECLTYP="0" PARPASSTYP="1" TYPTYPE="1" TYPE="ARCHIVEPOS"/>
+   <parameter CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="PROCESS_FOR_FBL3N_OPTI" SCONAME="IV_VARIANT" VERSION="1" LANGU="F" DESCRIPT="Mise en forme" CMPTYPE="1" MTDTYPE="0" EDITORDER="2 " DISPID="0 " PARDECLTYP="0" PARPASSTYP="1" TYPTYPE="1" TYPE="LTDX-VARIANT" PAROPTIONL="X"/>
+   <parameter CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="PROCESS_FOR_FBL3N_OPTI" SCONAME="EV_PROCESS_STANDARD" VERSION="1" LANGU="F" DESCRIPT="Valeur de vérité XSD : vrai/faux [ext.]" CMPTYPE="1" MTDTYPE="0" EDITORDER="3 " DISPID="0 " PARDECLTYP="1" PARPASSTYP="1" TYPTYPE="1" TYPE="XSDBOOLEAN"/>
+   <parameter CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="PROCESS_FOR_FBL3N_OPTI" SCONAME="RT_DOC_DATA" VERSION="1" LANGU="F" DESCRIPT="Syst. d&apos;info archives : table de mémoires tampons de table" CMPTYPE="1" MTDTYPE="0" EDITORDER="4 " DISPID="0 " PARDECLTYP="3" PARPASSTYP="0" TYPTYPE="1" TYPE="AS_T_TABLEBUFFER"/>
+   <source>METHOD process_for_fbl3n_opti.
+
+***------------------------------------------------------------------***
+**                             TABLES                                 **
+***------------------------------------------------------------------***
+  DATA :
+    lt_tabkey          TYPE zcl_archive_util=&gt;tt_tabkey,
+    lt_doc_data        TYPE as_t_tablebuffer,
+    lt_aind_str2       TYPE zcl_archive_util=&gt;tt_aind_str2,
+    lt_archive_ref_tab TYPE zcl_archive_util=&gt;tt_archive_reftab.
+
+  DATA :
+    lot_table_archive TYPE REF TO data.
+
+***------------------------------------------------------------------***
+**                            STRUCTURE                               **
+***------------------------------------------------------------------***
+  DATA :
+        los_table_std TYPE REF TO data.
+
+***------------------------------------------------------------------***
+**                            INSTANCES                               **
+***------------------------------------------------------------------***
+  DATA :
+    lo_datadescr   TYPE REF TO cl_abap_datadescr,
+    lo_structdescr TYPE REF TO cl_abap_structdescr,
+    lo_tabledescr  TYPE REF TO cl_abap_tabledescr.
+
+***------------------------------------------------------------------***
+**                            VARIABLES                               **
+***------------------------------------------------------------------***
+  DATA :
+    lv_variable         TYPE string,
+    lv_process_standard TYPE xsdboolean.
+
+***------------------------------------------------------------------***
+**                          FIELD-SYMBOLS                             **
+***------------------------------------------------------------------***
+  FIELD-SYMBOLS :
+    &lt;lfs_s_key&gt;           TYPE any,
+    &lt;lfs_variant&gt;         TYPE any,
+    &lt;lfs_s_table_std&gt;     TYPE any,
+    &lt;lfs_t_table_std&gt;     TYPE STANDARD TABLE,
+    &lt;lfs_t_table_archive&gt; TYPE STANDARD TABLE.
+
+***==================================================================***
+**                             TRAITEMENT                             **
+***==================================================================***
+
+  CLEAR : ev_process_standard.
+
+  &quot; -----------------------------------------------------------
+  &quot; Principe de fonctionnement :
+  &quot; -----------------------------------------------------------
+  &quot; Le but de cette méthode est de lire les tables
+  &quot; de structure d&apos;archive (ZARIXFI*) plutôt que les fichiers
+  &quot; d&apos;archives. Si, et uniquement, TOUS les champs de la
+  &quot; variante d&apos;affiche sont disponibles dans la structure
+  &quot; d&apos;archive.
+  &quot; -----------------------------------------------------------
+
+  &quot; -----------------------------------------------------------
+  &quot; Contrôle activation
+  &quot; -----------------------------------------------------------
+
+  IF zcl_archive_util=&gt;mv_opti_fbl3n EQ abap_false.
+    &quot; Optimisation désactivée au niveau HC
+    &quot;&quot;  --&gt; Traitement standard
+    ev_process_standard = abap_true.
+    RETURN.
+
+  ENDIF.
+
+  &quot; -----------------------------------------------------------
+  &quot; Pré-traitement
+  &quot; -----------------------------------------------------------
+
+  IF NOT iv_variant IS INITIAL.
+    &quot; Variante transmise
+    &quot;&quot;  --&gt; Initialsation pointeur
+    lv_variable = &apos;IV_VARIANT&apos; ##NO_TEXT.
+
+  ELSE.
+    &quot; Variante non transmise
+    &quot;&quot;  --&gt; Récupération Variante en cours d&apos;utilisation (FBL3N)
+    lv_variable = zcl_archive_util=&gt;mc_variable-variant_fbl3n.
+
+  ENDIF.
+  ASSIGN (lv_variable) TO &lt;lfs_variant&gt;.
+  IF sy-subrc NE 0.
+    &quot; Erreur assignation
+    &quot;&quot;  --&gt; Traitement standard
+    ev_process_standard = abap_true.
+    RETURN.
+
+  ENDIF.
+
+  &quot; -----------------------------------------------------------
+  &quot; Traitement optimisé peut-il être utilisé ?
+  &quot; -----------------------------------------------------------
+
+  &quot; Peux-t-on utiliser le traitement optimisé ?
+  IF zcl_archive_util=&gt;can_use_archive_optimization(
+      is_varkey    = VALUE #(
+        report  = zcl_archive_util=&gt;mc_repid-fbl3n
+        variant = CONV #( &lt;lfs_variant&gt; )
+      )
+      ir_archindex = zcl_archive_util=&gt;mcr_archindex_fbl3n
+   ) EQ abap_false.
+    &quot; Non // Il est nécessaire de le lire les fichiers d&apos;archives
+    &quot;&quot;  --&gt; Arrêt du traitement
+    ev_process_standard = abap_true.
+    RETURN.
+
+  ENDIF.
+
+  &quot; -----------------------------------------------------------
+  &quot; Récupération des données
+  &quot; -----------------------------------------------------------
+
+  &quot; Récupération des données pour récupération des données Archivées
+  zcl_archive_util=&gt;_load_from_buffer_data(
+    EXPORTING
+      ir_archindex      = zcl_archive_util=&gt;mcr_archindex_fbl3n
+    IMPORTING
+      et_tabkey          = lt_tabkey
+      et_aind_str2       = lt_aind_str2
+      et_archive_ref_tab = lt_archive_ref_tab
+  ).
+
+  &quot; -----------------------------------------------------------
+  &quot; Exécution traitement Archive optimisée
+  &quot; -----------------------------------------------------------
+
+  &quot; Exécution traitement spécifique optimisés
+  LOOP AT lt_aind_str2 ASSIGNING FIELD-SYMBOL(&lt;lfs_s_aind_str2&gt;).
+
+    TRY.
+        &quot; Création table Archive typée dynamiquement
+        lo_datadescr ?= cl_abap_structdescr=&gt;describe_by_name( &lt;lfs_s_aind_str2&gt;-gentab ).
+        lo_tabledescr = cl_abap_tabledescr=&gt;create( lo_datadescr ).
+        CREATE DATA lot_table_archive TYPE HANDLE lo_tabledescr.
+        IF sy-subrc EQ 0.
+          &quot; Initilisation pointeur sur la table des données Archivées
+          ASSIGN lot_table_archive-&gt;* TO &lt;lfs_t_table_archive&gt;.
+
+        ENDIF.
+        IF sy-subrc NE 0.
+          &quot; Erreur lors de la génération de la table dynamique
+          &quot;&quot;  --&gt; Traitement standard
+          lv_process_standard = abap_true.
+          RETURN.
+
+        ENDIF.
+
+      CATCH cx_sy_table_creation.
+        &quot; Erreur création table
+        &quot;&quot;  --&gt; On va lancer le traitement standard
+        lv_process_standard = abap_true.
+        RETURN.
+
+    ENDTRY.
+
+    &quot; Récupération des données archivées
+    SELECT * FROM (&lt;lfs_s_aind_str2&gt;-gentab)
+            WHERE archivekey EQ @is_archivekey-archivekey
+              AND archiveofs EQ @is_archivekey-archiveofs
+       INTO TABLE @&lt;lfs_t_table_archive&gt;.
+    IF sy-subrc NE 0.
+      &quot; Pas de correspondance
+      &quot;&quot;  --&gt; Passe à l&apos;itération suivante
+      CONTINUE.
+
+    ENDIF.
+
+    &quot; Récupération première itération des tables archivées
+    READ TABLE lt_archive_ref_tab WITH KEY archindex = &lt;lfs_s_aind_str2&gt;-archindex
+                              TRANSPORTING NO FIELDS BINARY SEARCH.
+    IF sy-subrc NE 0.
+      &quot; Aucune correspondance
+      &quot;&quot;  --&gt; Passe à l&apos;itération suivante
+      CONTINUE.
+
+    ENDIF.
+
+    &quot; Parcours chaque table traitée par l&apos;Archive
+    LOOP AT lt_archive_ref_tab ASSIGNING FIELD-SYMBOL(&lt;lfs_s_archive_ref_tab&gt;) FROM sy-tabix.
+
+      IF &lt;lfs_s_archive_ref_tab&gt;-archindex NE &lt;lfs_s_aind_str2&gt;-archindex.
+        &quot; On ne traite plus le même Archive
+        &quot;&quot;  --&gt; Arrêt de la boucle
+        EXIT.
+
+      ENDIF.
+
+      &quot; Récupération entrée correspondant à la table standard
+      READ TABLE lt_doc_data WITH KEY tabname = &lt;lfs_s_archive_ref_tab&gt;-reftab
+                            ASSIGNING FIELD-SYMBOL(&lt;lfs_s_doc_data&gt;).
+      IF sy-subrc NE 0.
+        &quot; Aucune correspondance
+        TRY.
+            &quot;&quot;  --&gt; Création table Standard typée dynamiquement
+            APPEND VALUE #( tabname = &lt;lfs_s_archive_ref_tab&gt;-reftab ) TO lt_doc_data ASSIGNING &lt;lfs_s_doc_data&gt;.
+            lo_datadescr ?= cl_abap_structdescr=&gt;describe_by_name( &lt;lfs_s_archive_ref_tab&gt;-reftab ).
+            lo_tabledescr = cl_abap_tabledescr=&gt;create( lo_datadescr ).
+            CREATE DATA &lt;lfs_s_doc_data&gt;-tabref TYPE HANDLE lo_tabledescr.
+            IF sy-subrc NE 0.
+              &quot; Erreur assignation table dynamique
+              &quot;&quot;  --&gt; On va lancer le traitement standard
+              ev_process_standard = abap_true.
+              RETURN.
+
+            ENDIF.
+
+          CATCH cx_sy_table_creation.
+            &quot; Erreur création table
+            &quot;&quot;  --&gt; On va lancer le traitement standard
+            ev_process_standard = abap_true.
+            RETURN.
+
+        ENDTRY.
+
+      ENDIF.
+
+      &quot; Initialisation pointeur sur la table des données standard
+      ASSIGN &lt;lfs_s_doc_data&gt;-tabref-&gt;* TO &lt;lfs_t_table_std&gt;.
+      IF sy-subrc NE 0.
+        &quot; Erreur assignation table dynamique
+        &quot;&quot;  --&gt; On va lancer le traitement standard
+        ev_process_standard = abap_true.
+        RETURN.
+
+      ENDIF.
+
+      &quot; Récupération Clef de la table
+      READ TABLE lt_tabkey WITH TABLE KEY tabname = &lt;lfs_s_archive_ref_tab&gt;-reftab
+                                ASSIGNING FIELD-SYMBOL(&lt;lfs_s_tabkey&gt;).
+      IF sy-subrc EQ 0.
+        &quot; Correspondance trouvée
+        &quot;&quot;  --&gt; Initialisation pointeur sur la structure
+        ASSIGN &lt;lfs_s_tabkey&gt;-o_key-&gt;* TO &lt;lfs_s_key&gt;.
+
+      ENDIF.
+
+      &quot; Ajout des données dans table de données // On agrége les données selon leurs Clefs
+      LOOP AT &lt;lfs_t_table_archive&gt; ASSIGNING FIELD-SYMBOL(&lt;lfs_s_table_archive&gt;).
+
+        IF &lt;lfs_s_key&gt; IS ASSIGNED.
+          &quot; Structure de Clef déterminé // On vient récupérer l&apos;entrée déjà traité
+          &quot;&quot;  --&gt; Initialisation des Clefs
+          MOVE-CORRESPONDING &lt;lfs_s_table_archive&gt; TO &lt;lfs_s_key&gt;.
+
+          &quot;&quot;  --&gt; Recherche de l&apos;entrée correspondante (pour aggrégation)
+          DATA(lv_tabix) = zcl_itab_utilities=&gt;read_table_dynamic_key(
+            EXPORTING
+              it_internal_table = &lt;lfs_t_table_std&gt;
+              is_key_structure  = &lt;lfs_s_key&gt;
+            IMPORTING
+              es_result         = los_table_std
+          ).
+          IF lv_tabix GT 0 AND los_table_std IS BOUND.
+            &quot; Correspondance trouvée
+            &quot;&quot;  --&gt; Récupération de l&apos;entrée
+            ASSIGN los_table_std-&gt;* TO &lt;lfs_s_table_std&gt;.
+
+          ENDIF.
+
+          &quot; Réinitialisation Clef
+          CLEAR : &lt;lfs_s_key&gt;.
+
+        ENDIF.
+        IF NOT &lt;lfs_s_table_std&gt; IS ASSIGNED.
+          &quot; Aucune correspondance trouvée // Ou pas de Clef
+          &quot;&quot;  --&gt; Création nouvelle ligne
+          APPEND INITIAL LINE TO &lt;lfs_t_table_std&gt; ASSIGNING &lt;lfs_s_table_std&gt;.
+
+        ENDIF.
+
+        IF NOT &lt;lfs_s_table_std&gt; IS INITIAL.
+          &quot; Données déjà initialisé
+          &quot;&quot;  --&gt; Initialisation des données (avec conservation des anciennes)
+          CASE &lt;lfs_s_archive_ref_tab&gt;-reftab.
+
+            WHEN &apos;BKPF&apos; ##NO_TEXT.
+              &quot; BKPF
+              &quot;&quot;  --&gt; Utilise cette instruction pour conserver les données précédemment initialisé
+              &lt;lfs_s_table_std&gt; = CORRESPONDING bkpf( BASE ( &lt;lfs_s_table_std&gt; ) &lt;lfs_s_table_archive&gt; ).
+
+            WHEN &apos;BSEG&apos; ##NO_TEXT.
+              &quot;&quot;  --&gt; Utilise cette instruction pour conserver les données précédemment initialisé
+              &lt;lfs_s_table_std&gt; = CORRESPONDING bseg( BASE ( &lt;lfs_s_table_std&gt; ) &lt;lfs_s_table_archive&gt; ).
+
+            WHEN OTHERS.
+              &quot; Autre type
+              &quot;&quot;  --&gt; Initialise champ correspondant (sans conservation des anciennes données)
+              MOVE-CORRESPONDING &lt;lfs_s_table_archive&gt; TO &lt;lfs_s_table_std&gt;.
+
+          ENDCASE.
+
+        ELSE.
+          &quot; Pas de données
+          &quot;&quot;  --&gt; Initialise champ correspondant
+          MOVE-CORRESPONDING &lt;lfs_s_table_archive&gt; TO &lt;lfs_s_table_std&gt;.
+
+        ENDIF.
+
+        &quot; Réinitialisation
+        UNASSIGN : &lt;lfs_s_table_std&gt;.
+
+      ENDLOOP.    &quot;Fin boucle des données de la table d&apos;Archive
+
+    ENDLOOP.      &quot;Fin boucle des tables traitées par l&apos;Archive
+
+  ENDLOOP.        &quot;Fin boucle des Archives
+
+ENDMETHOD.</source>
+  </method>
+  <method CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="_LOAD_FROM_BUFFER_DATA" VERSION="1" LANGU="F" DESCRIPT="Archive - Lecture données Buffer" EXPOSURE="0" STATE="1" EDITORDER="1 " DISPID="0 " MTDTYPE="0" MTDDECLTYP="1" BCMTDCAT="00" BCMTDSYN="0">
+   <parameter CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="_LOAD_FROM_BUFFER_DATA" SCONAME="IR_ARCHINDEX" VERSION="1" LANGU="F" DESCRIPT="Range - AIND_DESC" CMPTYPE="1" MTDTYPE="0" EDITORDER="1 " DISPID="0 " PARDECLTYP="0" PARPASSTYP="1" TYPTYPE="1" TYPE="ZAIND_DESC_RANGE_T" PAROPTIONL="X"/>
+   <parameter CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="_LOAD_FROM_BUFFER_DATA" SCONAME="IS_VARKEY" VERSION="1" LANGU="F" DESCRIPT="Structure de transfert pour nom de programme et variante" CMPTYPE="1" MTDTYPE="0" EDITORDER="2 " DISPID="0 " PARDECLTYP="0" PARPASSTYP="1" TYPTYPE="1" TYPE="RSVARKEY" PAROPTIONL="X"/>
+   <parameter CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="_LOAD_FROM_BUFFER_DATA" SCONAME="ET_TABKEY" VERSION="1" LANGU="F" DESCRIPT="Clef table - Type de table" CMPTYPE="1" MTDTYPE="0" EDITORDER="3 " DISPID="0 " PARDECLTYP="1" PARPASSTYP="1" TYPTYPE="1" TYPE="ZCL_ARCHIVE_UTIL=&gt;TT_TABKEY"/>
+   <parameter CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="_LOAD_FROM_BUFFER_DATA" SCONAME="ET_AIND_STR2" VERSION="1" LANGU="F" DESCRIPT="Archive / Table d&apos;archive - Type de table" CMPTYPE="1" MTDTYPE="0" EDITORDER="4 " DISPID="0 " PARDECLTYP="1" PARPASSTYP="1" TYPTYPE="1" TYPE="ZCL_ARCHIVE_UTIL=&gt;TT_AIND_STR2"/>
+   <parameter CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="_LOAD_FROM_BUFFER_DATA" SCONAME="ET_ARCHIVE_REF_TAB" VERSION="1" LANGU="F" CMPTYPE="1" MTDTYPE="0" EDITORDER="5 " DISPID="0 " PARDECLTYP="1" PARPASSTYP="1" TYPTYPE="1" TYPE="ZCL_ARCHIVE_UTIL=&gt;TT_ARCHIVE_REFTAB"/>
+   <parameter CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="_LOAD_FROM_BUFFER_DATA" SCONAME="ES_VARIANT_FC" VERSION="1" LANGU="F" DESCRIPT="Variante / FC - Structure" CMPTYPE="1" MTDTYPE="0" EDITORDER="6 " DISPID="0 " PARDECLTYP="1" PARPASSTYP="1" TYPTYPE="1" TYPE="ZCL_ARCHIVE_UTIL=&gt;TS_VARIANT_FC"/>
+   <parameter CLSNAME="ZCL_ARCHIVE_UTIL" CMPNAME="_LOAD_FROM_BUFFER_DATA" SCONAME="RV_ERROR_OPTIMIZATION" VERSION="1" LANGU="F" DESCRIPT="Erreur traitement optimisé" CMPTYPE="1" MTDTYPE="0" EDITORDER="7 " DISPID="0 " PARDECLTYP="3" PARPASSTYP="0" TYPTYPE="1" TYPE="XSDBOOLEAN"/>
+   <source>METHOD _load_from_buffer_data.
+
+***------------------------------------------------------------------***
+**                             TABLES                                 **
+***------------------------------------------------------------------***
+  DATA :
+    lt_component     TYPE abap_component_tab,
+    lt_aind_str3     TYPE zcl_archive_util=&gt;tt_aind_str3,
+    lt_aind_str3_tmp TYPE zcl_archive_util=&gt;tt_aind_str3.
+
+***------------------------------------------------------------------***
+**                            STRUCTURE                               **
+***------------------------------------------------------------------***
+  DATA :
+    ls_ltdxkey   TYPE ltdxkey,
+    ls_aind_str2 TYPE zcl_archive_util=&gt;ts_aind_str2,
+    ls_aind_str3 TYPE zcl_archive_util=&gt;ts_aind_str3.
+
+***------------------------------------------------------------------***
+**                            INSTANCES                               **
+***------------------------------------------------------------------***
+  DATA :
+    lo_datadescr   TYPE REF TO cl_abap_datadescr,
+    lo_structdescr TYPE REF TO cl_abap_structdescr.
+
+***------------------------------------------------------------------***
+**                            VARIABLES                               **
+***------------------------------------------------------------------***
+  DATA :
+    lv_tabkey_found              TYPE xsdboolean,
+    lv_buffer_empty              TYPE xsdboolean,
+    lv_at_least_one_tabkey_found TYPE xsdboolean.
+
+***==================================================================***
+**                           TRAITEMENT                               **
+***==================================================================***
+
+  REFRESH : et_archive_ref_tab, et_aind_str2, et_tabkey.
+
+
+  IF NOT is_varkey IS INITIAL AND es_variant_fc IS SUPPLIED.
+    &quot; -----------------------------------------------------------
+    &quot; FieldCat de la Variante d&apos;affichage
+    &quot; -----------------------------------------------------------
+
+    &quot; Récupération variante présente en Buffer
+    READ TABLE zcl_archive_util=&gt;ms_buffer_data-t_variant_fc WITH TABLE KEY variant_key = is_varkey
+                                                                  ASSIGNING FIELD-SYMBOL(&lt;lfs_s_variant_fc&gt;).
+    IF sy-subrc NE 0.
+      &quot; Aucune correspondance
+      &quot;&quot;  --&gt; Ajout Variante en Buffer
+      INSERT VALUE #( variant_key = is_varkey ) INTO TABLE zcl_archive_util=&gt;ms_buffer_data-t_variant_fc
+                                                 ASSIGNING &lt;lfs_s_variant_fc&gt;.
+
+      &quot;&quot;  --&gt; Récupération Clef pour récupération FC variante
+      SELECT SINGLE * FROM ltdx
+        WHERE report  EQ @is_varkey-report
+          AND variant EQ @is_varkey-variant
+         INTO CORRESPONDING FIELDS OF @ls_ltdxkey.
+      IF sy-subrc EQ 0.
+        &quot; Variante d&apos;affichage existante
+        &quot;&quot;  --&gt; Import du FC
+        CALL FUNCTION &apos;LT_DBDATA_READ_FROM_LTDX&apos;
+          EXPORTING
+            is_varkey    = ls_ltdxkey
+          TABLES
+            t_dbfieldcat = &lt;lfs_s_variant_fc&gt;-t_dbfieldcat
+          EXCEPTIONS
+            not_found    = 1
+            wrong_relid  = 2
+            OTHERS       = 3.
+
+        &quot; Supprime tous les champs non affichés
+        DELETE &lt;lfs_s_variant_fc&gt;-t_dbfieldcat WHERE   param NE &apos;NO_OUT&apos; ##NO_TEXT
+                                                  OR ( param EQ &apos;NO_OUT&apos; ##NO_TEXT AND value = abap_true ).
+
+      ENDIF.
+
+    ENDIF.
+
+    &quot; Retourne les données
+    es_variant_fc = &lt;lfs_s_variant_fc&gt;.
+
+  ENDIF.
+
+  IF et_aind_str2 IS SUPPLIED AND NOT ir_archindex[] IS INITIAL.
+    &quot; -----------------------------------------------------------
+    &quot; Lien Archive / Tables archives
+    &quot; -----------------------------------------------------------
+
+    IF zcl_archive_util=&gt;ms_buffer_data-t_aind_str2[] IS INITIAL.
+      &quot; Aucune données en Buffer
+      &quot;&quot;  --&gt; Initialise flag Buffer vide
+      lv_buffer_empty = abap_true.
+
+      &quot;&quot;  --&gt; Récupération Nom des tables d&apos;archives générés
+      SELECT DISTINCT archindex, gentab
+        FROM aind_str2
+       WHERE aind_str2~archindex IN @ir_archindex
+         AND aind_str2~active    EQ @abap_true
+        APPENDING TABLE @zcl_archive_util=&gt;ms_buffer_data-t_aind_str2.
+
+    ENDIF.
+
+    &quot; Retourne les données demandées
+    LOOP AT ir_archindex ASSIGNING FIELD-SYMBOL(&lt;lfs_sr_archindex&gt;).
+
+      &quot; Archive déjà présente en Buffer ?
+      READ TABLE zcl_archive_util=&gt;ms_buffer_data-t_aind_str2 WITH TABLE KEY archindex = &lt;lfs_sr_archindex&gt;-low
+                                                                   ASSIGNING FIELD-SYMBOL(&lt;lfs_s_aind_str2&gt;).
+      IF sy-subrc NE 0.
+        &quot; Pas de correspondance en Buffer
+        IF lv_buffer_empty EQ abap_false.
+          &quot; Sélection mutliples non effectuée
+          &quot;&quot;  --&gt; Récupération Nom des tables d&apos;archives générés en DB
+          SELECT SINGLE archindex, gentab
+            FROM aind_str2
+           WHERE aind_str2~archindex EQ @&lt;lfs_sr_archindex&gt;-low
+             AND aind_str2~active    EQ @abap_true
+            INTO @ls_aind_str2.
+
+        ELSE.
+          &quot; Sélection multiple effectuée &amp; L&apos;entrée n&apos;existe pas en DB
+          &quot;&quot;  --&gt; Force code retour en erreur pour traitement commun
+          sy-subrc = 4.
+
+        ENDIF.
+        IF sy-subrc NE 0.
+          &quot; Aucune correspondance en DB
+          &quot;&quot;  --&gt; Initialisation données pour ajout dans le Buffer en tant qu&apos;entrée inexistante
+          ls_aind_str2-archindex = &lt;lfs_sr_archindex&gt;-low.
+          ls_aind_str2-not_exist = abap_true.
+
+        ENDIF.
+
+        &quot;&quot;  --&gt; Ajout dans le Buffer
+        INSERT ls_aind_str2 INTO TABLE zcl_archive_util=&gt;ms_buffer_data-t_aind_str2 ASSIGNING &lt;lfs_s_aind_str2&gt;.
+
+      ENDIF.
+
+      IF &lt;lfs_s_aind_str2&gt;-not_exist EQ abap_false.
+        &quot; Archive existe
+        &quot;&quot;  --&gt; Retourne les données
+        INSERT &lt;lfs_s_aind_str2&gt; INTO TABLE et_aind_str2.
+
+      ENDIF.
+
+    ENDLOOP.
+
+  ENDIF.
+
+  IF ( et_tabkey IS SUPPLIED OR et_archive_ref_tab IS SUPPLIED )
+  AND NOT ir_archindex[] IS INITIAL.
+    &quot; -----------------------------------------------------------
+    &quot; Lien Archive / Tables standards archivées
+    &quot; -----------------------------------------------------------
+
+    IF zcl_archive_util=&gt;ms_buffer_data-t_aind_str3[] IS INITIAL.
+      &quot; Aucune données en Buffer
+      &quot;&quot;  --&gt; Initialise flag Buffer vide
+      lv_buffer_empty = abap_true.
+
+      &quot;&quot;  --&gt; Récupération des Clefs des tables archivées
+      SELECT aind_str3~archindex, aind_str3~reftab, aind_str3~reffield, dd03l~rollname
+        FROM aind_str3   INNER JOIN dd02l ON dd02l~tabname   EQ aind_str3~reftab
+                         INNER JOIN dd03l ON dd03l~tabname   EQ dd02l~tabname
+                                         AND dd03l~fieldname EQ aind_str3~reffield
+       WHERE aind_str3~archindex IN @ir_archindex[]
+         AND aind_str3~itype     EQ &apos;I&apos; ##NO_TEXT
+         AND aind_str3~keyflag   EQ @abap_true
+         AND dd02l~tabclass      EQ &apos;TRANSP&apos; ##NO_TEXT
+        INTO TABLE @zcl_archive_util=&gt;ms_buffer_data-t_aind_str3.
+
+    ENDIF.
+
+    &quot; Retourne les données demandées
+    LOOP AT ir_archindex ASSIGNING &lt;lfs_sr_archindex&gt;.
+
+      &quot; Données présente en Buffer ?
+      READ TABLE zcl_archive_util=&gt;ms_buffer_data-t_aind_str3 WITH KEY archindex = &lt;lfs_sr_archindex&gt;-low
+                                                             ASSIGNING FIELD-SYMBOL(&lt;lfs_s_aind_str3&gt;) BINARY SEARCH.
+      IF sy-subrc NE 0.
+        &quot; Aucune correspondance en Buffer
+        IF lv_buffer_empty EQ abap_false.
+          &quot; Sélection mutliples non effectuée
+          &quot;&quot;  --&gt; Recherche en DB
+          SELECT aind_str3~archindex, aind_str3~reftab, aind_str3~reffield, dd03l~rollname
+            FROM aind_str3   INNER JOIN dd02l ON dd02l~tabname   EQ aind_str3~reftab
+                             INNER JOIN dd03l ON dd03l~tabname   EQ dd02l~tabname
+                                             AND dd03l~fieldname EQ aind_str3~reffield
+           WHERE aind_str3~archindex EQ @&lt;lfs_sr_archindex&gt;-low
+             AND aind_str3~keyflag   EQ @abap_true
+             AND dd02l~tabclass      EQ &apos;TRANSP&apos; ##NO_TEXT
+            INTO TABLE @lt_aind_str3_tmp.
+
+        ELSE.
+          &quot; Sélection multiple effectuée &amp; L&apos;entrée n&apos;existe pas en DB
+          &quot;&quot;  --&gt; Force code retour en erreur pour traitement commun
+          sy-subrc = 4.
+
+        ENDIF.
+        IF sy-subrc NE 0.
+          &quot; Aucune correspondance en DB
+          &quot;&quot;  --&gt; Initialisation données pour ajout dans le Buffer en tant qu&apos;entrée inexistante
+          lt_aind_str3_tmp = VALUE #( ( archindex = &lt;lfs_sr_archindex&gt;-low not_exist = abap_true ) ).
+
+        ENDIF.
+
+        &quot; Ajout dans le Buffer
+        INSERT LINES OF lt_aind_str3_tmp INTO TABLE zcl_archive_util=&gt;ms_buffer_data-t_aind_str3.
+
+        IF lt_aind_str3_tmp[ archindex = &lt;lfs_sr_archindex&gt;-low ]-not_exist EQ abap_true.
+          &quot; Archive inexistante
+          &quot;&quot;  --&gt; Passe à l&apos;itération suivante
+          CONTINUE.
+
+        ENDIF.
+
+        &quot; Récupère position première itération de l&apos;Archive
+        READ TABLE zcl_archive_util=&gt;ms_buffer_data-t_aind_str3 WITH KEY archindex = &lt;lfs_sr_archindex&gt;-low
+                                                             TRANSPORTING NO FIELDS BINARY SEARCH.
+
+      ELSEIF &lt;lfs_s_aind_str3&gt;-not_exist EQ abap_true.
+        &quot; Archive inexistante
+        &quot;&quot;  --&gt; Passe à l&apos;itération suivante
+        CONTINUE.
+
+      ENDIF.
+
+      &quot; Retourne les données
+      LOOP AT zcl_archive_util=&gt;ms_buffer_data-t_aind_str3 ASSIGNING &lt;lfs_s_aind_str3&gt; FROM sy-tabix.
+
+        IF &lt;lfs_s_aind_str3&gt;-archindex NE &lt;lfs_sr_archindex&gt;-low.
+          &quot; On ne traite plus la même Archive
+          &quot;&quot;  --&gt; Arrêt de la boucle
+          EXIT.
+
+        ENDIF.
+
+        AT NEW reftab.
+          &quot; A chaque changement de table
+          &quot;&quot;  --&gt; Réinitialise flag Clef trouvée
+          CLEAR : lv_tabkey_found.
+
+          &quot;&quot;  --&gt; Ajout de l&apos;entrée
+          INSERT CORRESPONDING #( &lt;lfs_s_aind_str3&gt; ) INTO TABLE et_archive_ref_tab.
+
+          IF et_tabkey IS SUPPLIED AND &lt;lfs_s_aind_str3&gt;-tabkey_generated EQ abap_true.
+            &quot; Clef demandé et Clef déjà contenu en Buffer
+            TRY.
+                &quot;&quot;  --&gt; Retourne les Clefs
+                INSERT zcl_archive_util=&gt;ms_buffer_data-t_tabkey[ tabname = &lt;lfs_s_aind_str3&gt;-reftab ] INTO TABLE et_tabkey.
+
+                &quot;&quot;  --&gt; Initialisation flag indicateur Clef présente en Buffer
+                lv_at_least_one_tabkey_found = lv_tabkey_found = abap_true.
+
+              CATCH cx_sy_itab_line_not_found.
+                &quot; Table non trouvé
+                &quot;&quot;  --&gt; Réinitialise flag Clef générée (optimisation Bufférisation)
+                lv_at_least_one_tabkey_found = lv_tabkey_found = ls_aind_str3-tabkey_generated = abap_false.
+                MODIFY zcl_archive_util=&gt;ms_buffer_data-t_aind_str3
+                  FROM ls_aind_str3 TRANSPORTING tabkey_generated
+                                           WHERE archindex = &lt;lfs_s_aind_str3&gt;-archindex
+                                             AND reftab    = &lt;lfs_s_aind_str3&gt;-reftab.
+
+            ENDTRY.
+
+          ENDIF.
+
+        ENDAT.
+
+        IF lv_tabkey_found EQ abap_true.
+          &quot; Passe à l&apos;itération suivante
+          CONTINUE.
+
+        ENDIF.
+
+        IF et_tabkey IS SUPPLIED.
+          &quot; Ajout de l&apos;entrée pour génération des Clefs
+          INSERT &lt;lfs_s_aind_str3&gt; INTO TABLE lt_aind_str3.
+
+        ENDIF.
+
+      ENDLOOP.
+
+      &quot;&quot;  --&gt; Réinitialise flag Clef trouvée
+      CLEAR : lv_tabkey_found.
+
+    ENDLOOP.
+
+    FREE : lt_aind_str3_tmp.
+
+  ENDIF.
+
+  IF et_tabkey IS SUPPLIED.
+    &quot; -----------------------------------------------------------
+    &quot; Clef des tables archivées
+    &quot; -----------------------------------------------------------
+
+    &quot; Constitution table liste des Clefs
+    LOOP AT lt_aind_str3 ASSIGNING &lt;lfs_s_aind_str3&gt;.
+
+      AT NEW reftab.
+        &quot; A chaque nouvelle table
+        IF lv_at_least_one_tabkey_found EQ abap_true.
+          &quot;&quot;  --&gt; Vérifie si l&apos;entrée n&apos;a pas déjà été traité via le Buffer précédent
+          READ TABLE et_tabkey WITH TABLE KEY tabname = &lt;lfs_s_aind_str3&gt;-reftab
+                                 TRANSPORTING NO FIELDS.
+          IF sy-subrc EQ 0.
+            &quot; Table déjà traitée
+            &quot;&quot;  --&gt; Supprime les entrées sur cette table
+            DELETE lt_aind_str3 WHERE reftab EQ &lt;lfs_s_aind_str3&gt;-reftab.
+
+            &quot;&quot;  --&gt; Passe à l&apos;itération suivante
+            CONTINUE.
+
+          ENDIF.
+
+        ENDIF.
+
+        &quot;&quot;  --&gt; Récupération entrée correspondante dans le Buffer
+        READ TABLE zcl_archive_util=&gt;ms_buffer_data-t_tabkey WITH TABLE KEY tabname = &lt;lfs_s_aind_str3&gt;-reftab
+                                                                  ASSIGNING FIELD-SYMBOL(&lt;lfs_s_tabkey&gt;).
+        IF &lt;lfs_s_aind_str3&gt;-tabkey_generated EQ abap_true.
+          &quot; Structure de Clef déjà générée
+          IF sy-subrc NE 0.
+            &quot; Pas de correspondance // Ne devrais pas se produire
+            &quot;&quot;  --&gt; Réinitialise flag de génération
+            CLEAR : &lt;lfs_s_aind_str3&gt;-tabkey_generated.
+
+          ELSE.
+            &quot; Correspondance trouvée
+            &quot;&quot;  --&gt; Retourne Clef
+            INSERT &lt;lfs_s_tabkey&gt; INTO TABLE et_tabkey.
+
+            &quot;&quot;  --&gt; Passe à l&apos;itération suivante
+            CONTINUE.
+
+          ENDIF.
+
+        ENDIF.
+        IF sy-subrc NE 0.
+          &quot; Table non traitée
+          &quot;&quot;  --&gt; Ajout nouvelle entrée
+          INSERT VALUE #( tabname = &lt;lfs_s_aind_str3&gt;-reftab )
+            INTO TABLE zcl_archive_util=&gt;ms_buffer_data-t_tabkey ASSIGNING &lt;lfs_s_tabkey&gt;.
+
+        ENDIF.
+
+      ENDAT.
+
+      TRY.
+          &quot; Récupération description du champ
+          lo_datadescr ?= cl_abap_datadescr=&gt;describe_by_name( &lt;lfs_s_aind_str3&gt;-rollname ).
+
+        CATCH cx_root.
+          &quot;&quot;  --&gt; On ne pourra pas utiliser l&apos;optimisation
+          rv_error_optimization = abap_true.
+          EXIT.
+
+      ENDTRY.
+
+      &quot; Ajout de la Clef
+      APPEND VALUE #(
+        name = &lt;lfs_s_aind_str3&gt;-reffield
+        type = lo_datadescr
+      ) TO lt_component.
+
+      AT END OF reftab.
+        TRY.
+            &quot; Lors de la dernière Clef de la table
+            &quot;&quot;  --&gt; Création structure de Clef
+            lo_structdescr = cl_abap_structdescr=&gt;create( lt_component ).
+            CREATE DATA &lt;lfs_s_tabkey&gt;-o_key TYPE HANDLE lo_structdescr.
+            IF sy-subrc NE 0.
+              &quot;&quot;  --&gt; On ne pourra pas utiliser l&apos;optimisation
+              rv_error_optimization = abap_true.
+              EXIT.
+
+            ENDIF.
+
+          CATCH cx_sy_struct_creation.
+            &quot;&quot;  --&gt; On ne pourra pas utiliser l&apos;optimisation
+            rv_error_optimization = abap_true.
+            EXIT.
+
+        ENDTRY.
+
+        &quot;&quot;  --&gt; Initialisation flag Clef généré (optimisation Bufférisation)
+        ls_aind_str3-tabkey_generated = abap_true.
+        MODIFY zcl_archive_util=&gt;ms_buffer_data-t_aind_str3
+          FROM ls_aind_str3 TRANSPORTING tabkey_generated
+                                   WHERE archindex = &lt;lfs_s_aind_str3&gt;-archindex
+                                     AND reftab    = &lt;lfs_s_aind_str3&gt;-reftab.
+
+        &quot;&quot;  --&gt; Retourne la structure Clef de la table
+        INSERT &lt;lfs_s_tabkey&gt; INTO TABLE et_tabkey.
+
+        &quot;&quot;  --&gt; Réinitialisation table des composants Clefs
+        REFRESH : lt_component.
+
+      ENDAT.
+
+    ENDLOOP.
+
+  ENDIF.
+
+  &quot; -----------------------------------------------------------
+  &quot; Post-Traitement
+  &quot; -----------------------------------------------------------
+
+  IF rv_error_optimization EQ abap_true.
+    &quot; Impossible d&apos;utiliser le traitement optimisé
+    &quot;&quot;  --&gt; Réinitialisation des tables
+    REFRESH : et_archive_ref_tab, et_aind_str2, et_tabkey.
+
+  ENDIF.
+
+ENDMETHOD.</source>
+  </method>
+ </CLAS>
+ <CLAS CLSNAME="ZCL_ITAB_UTILITIES" VERSION="1" LANGU="F" DESCRIPT="Internal Table - Utilitaire" CATEGORY="00" EXPOSURE="2" STATE="1" RELEASE="0" CLSFINAL="X" CLSCCINCL="X" FIXPT="X" UNICODE="X" CLSBCCAT="00" DURATION_TYPE="0 " RISK_LEVEL="0 " ZSAPLINK_PLUGIN_MAJOR_VERSION="0 " ZSAPLINK_PLUGIN_MINOR_VERSION="1 " ZSAPLINK_PLUGIN_BUILD_VERSION="0 " ZSAPLINK_PLUGIN_INFO1="ZSAPLINK_CLASS is part of the main ZSAPLINK project --&gt; This plugin found there instead of ZSAPLINK_PLUGINS projects" ZSAPLINK_PLUGIN_INFO2="SAPLINK homepage: https://www.assembla.com/spaces/saplink/wiki" ZSAPLINK_PLUGIN_INFO3="Download from https://www.assembla.com/code/saplink/subversion/nodes" ZSAPLINK_PLUGIN_INFO4="and navigate to:  trunk -&gt; core -&gt; ZSAPLINK -&gt; CLAS -&gt; ZSAPLINK_CLASS.slnk">
+  <localImplementation>*&quot;* use this source file for the definition and implementation of
+*&quot;* local helper classes, interface definitions and type
+*&quot;* declarations</localImplementation>
+  <localTypes>*&quot;* use this source file for any type of declarations (class
+*&quot;* definitions, interfaces or type declarations) you need for
+*&quot;* components in the private section</localTypes>
+  <localMacros>*&quot;* use this source file for any macro definitions you need
+*&quot;* in the implementation part of the class</localMacros>
+  <method CLSNAME="ZCL_ITAB_UTILITIES" CMPNAME="READ_TABLE_DYNAMIC_KEY" VERSION="1" LANGU="F" DESCRIPT="Lecture table - Dynamique" EXPOSURE="2" STATE="1" EDITORDER="1 " DISPID="0 " MTDTYPE="0" MTDDECLTYP="1" BCMTDCAT="00" BCMTDSYN="0">
+   <parameter CLSNAME="ZCL_ITAB_UTILITIES" CMPNAME="READ_TABLE_DYNAMIC_KEY" SCONAME="IT_INTERNAL_TABLE" VERSION="1" LANGU="F" CMPTYPE="1" MTDTYPE="0" EDITORDER="1 " DISPID="0 " PARDECLTYP="0" PARPASSTYP="1" TYPTYPE="1" TYPE="INDEX TABLE"/>
+   <parameter CLSNAME="ZCL_ITAB_UTILITIES" CMPNAME="READ_TABLE_DYNAMIC_KEY" SCONAME="IT_KEY_VALUE" VERSION="1" LANGU="F" DESCRIPT="Standard list of key/value relationships as strings" CMPTYPE="1" MTDTYPE="0" EDITORDER="2 " DISPID="0 " PARDECLTYP="0" PARPASSTYP="1" TYPTYPE="1" TYPE="WDY_KEY_VALUE_LIST" PAROPTIONL="X"/>
+   <parameter CLSNAME="ZCL_ITAB_UTILITIES" CMPNAME="READ_TABLE_DYNAMIC_KEY" SCONAME="IS_KEY_STRUCTURE" VERSION="1" LANGU="F" CMPTYPE="1" MTDTYPE="0" EDITORDER="3 " DISPID="0 " PARDECLTYP="0" PARPASSTYP="1" TYPTYPE="1" TYPE="ANY" PAROPTIONL="X"/>
+   <parameter CLSNAME="ZCL_ITAB_UTILITIES" CMPNAME="READ_TABLE_DYNAMIC_KEY" SCONAME="ES_RESULT" VERSION="1" LANGU="F" CMPTYPE="1" MTDTYPE="0" EDITORDER="4 " DISPID="0 " PARDECLTYP="1" PARPASSTYP="1" TYPTYPE="1" TYPE="DATA"/>
+   <parameter CLSNAME="ZCL_ITAB_UTILITIES" CMPNAME="READ_TABLE_DYNAMIC_KEY" SCONAME="RV_TABIX" VERSION="1" LANGU="F" DESCRIPT="Zone système ABAP : index de ligne de tables internes" CMPTYPE="1" MTDTYPE="0" EDITORDER="5 " DISPID="0 " PARDECLTYP="3" PARPASSTYP="0" TYPTYPE="1" TYPE="SY-TABIX"/>
+   <source>METHOD read_table_dynamic_key.
+
+***------------------------------------------------------------------***
+**                           CONSTANTES                               **
+***------------------------------------------------------------------***
+  CONSTANTS :
+    lc_key_limit          TYPE i VALUE 20,
+    lc_key_field_var_name TYPE string VALUE &apos;LV_KEY_FIELD_&apos;,
+    lc_key_value_var_name TYPE string VALUE &apos;LV_KEY_VALUE_&apos;.
+
+***------------------------------------------------------------------***
+**                             TABLES                                 **
+***------------------------------------------------------------------***
+  DATA :
+      lt_key_value TYPE wdy_key_value_list.
+
+***------------------------------------------------------------------***
+**                            INSTANCES                               **
+***------------------------------------------------------------------***
+  DATA :
+        lo_structdescr TYPE REF TO cl_abap_structdescr.
+
+***------------------------------------------------------------------***
+**                            VARIABLES                               **
+***------------------------------------------------------------------***
+  DATA :
+    lv_variable     TYPE string,
+    lv_key_index    TYPE numc2,
+    lv_key_field_01 TYPE string,
+    lv_key_field_02 TYPE string,
+    lv_key_field_03 TYPE string,
+    lv_key_field_04 TYPE string,
+    lv_key_field_05 TYPE string,
+    lv_key_field_06 TYPE string,
+    lv_key_field_07 TYPE string,
+    lv_key_field_08 TYPE string,
+    lv_key_field_09 TYPE string,
+    lv_key_field_10 TYPE string,
+    lv_key_field_11 TYPE string,
+    lv_key_field_12 TYPE string,
+    lv_key_field_13 TYPE string,
+    lv_key_field_14 TYPE string,
+    lv_key_field_15 TYPE string,
+    lv_key_field_16 TYPE string,
+    lv_key_field_17 TYPE string,
+    lv_key_field_18 TYPE string,
+    lv_key_field_19 TYPE string,
+    lv_key_field_20 TYPE string,
+    lv_key_value_01 TYPE string,
+    lv_key_value_02 TYPE string,
+    lv_key_value_03 TYPE string,
+    lv_key_value_04 TYPE string,
+    lv_key_value_05 TYPE string,
+    lv_key_value_06 TYPE string,
+    lv_key_value_07 TYPE string,
+    lv_key_value_08 TYPE string,
+    lv_key_value_09 TYPE string,
+    lv_key_value_10 TYPE string,
+    lv_key_value_11 TYPE string,
+    lv_key_value_12 TYPE string,
+    lv_key_value_13 TYPE string,
+    lv_key_value_14 TYPE string,
+    lv_key_value_15 TYPE string,
+    lv_key_value_16 TYPE string,
+    lv_key_value_17 TYPE string,
+    lv_key_value_18 TYPE string,
+    lv_key_value_19 TYPE string,
+    lv_key_value_20 TYPE string.
+
+***------------------------------------------------------------------***
+**                          FIELD-SYMBOLS                             **
+***------------------------------------------------------------------***
+  FIELD-SYMBOLS :
+    &lt;lfs_s_result&gt;         TYPE any,
+    &lt;lfs_key_field&gt;        TYPE any,
+    &lt;lfs_key_value&gt;        TYPE any,
+    &lt;lfs_s_internal_table&gt; TYPE any.
+
+***==================================================================***
+**                             TRAITEMENT                             **
+***==================================================================***
+
+  CLEAR : es_result.
+
+  &quot; -----------------------------------------------------------
+  &quot; Pré-Traitement
+  &quot; -----------------------------------------------------------
+
+  &quot; Initialisation Indice négatif
+  rv_tabix = -1.
+
+  &quot; -----------------------------------------------------------
+  &quot; Contrôle
+  &quot; -----------------------------------------------------------
+
+  IF it_internal_table[] IS INITIAL
+  OR ( is_key_structure IS INITIAL AND it_key_value[] IS INITIAL ).
+    &quot; Strcture // Table Clef ou table vide
+    &quot;&quot;  --&gt; Arrêt du traitement
+    RETURN.
+
+  ENDIF.
+
+  &quot; -----------------------------------------------------------
+  &quot; Conversion table Clef / Valeur
+  &quot; -----------------------------------------------------------
+
+  IF NOT it_key_value[] IS INITIAL.
+    &quot; Table Clef / Valeur transmise
+    &quot;&quot;  --&gt; Initialisation table clef local
+    lt_key_value[] = it_key_value[].
+
+    &quot; Tri et suppression des doublons
+    SORT lt_key_value BY key.
+    DELETE ADJACENT DUPLICATES FROM lt_key_value COMPARING key.
+
+    &quot; Contrôle nombre de Clef
+    IF lines( lt_key_value[] ) GT lc_key_limit.
+      &quot; Traitement actuel ne supporte pas plus de 20 Clef
+      &quot;&quot;  --&gt; Arrêt du traitement
+      RETURN.
+
+    ENDIF.
+
+  ELSEIF NOT is_key_structure IS INITIAL.
+    &quot; Structure de Clef
+    TRY.
+        &quot;&quot;  --&gt; Récupération des composants de la structure Clef
+        lo_structdescr ?= cl_abap_structdescr=&gt;describe_by_data( is_key_structure ).
+
+        &quot;&quot;  --&gt; Contrôle nombre de Clef
+        IF lines( lo_structdescr-&gt;components[] ) GT lc_key_limit.
+          &quot; Traitement actuel ne supporte pas plus de 20 Clef
+          &quot;&quot;  --&gt; Arrêt du traitement
+          RETURN.
+
+        ENDIF.
+
+        &quot;&quot;  --&gt; Mise en table Clef / Valeur
+        LOOP AT lo_structdescr-&gt;components ASSIGNING FIELD-SYMBOL(&lt;lfs_s_component&gt;).
+
+          &quot; Initialisation pointeur sur la Valeur de la Clef
+          ASSIGN COMPONENT &lt;lfs_s_component&gt;-name OF STRUCTURE is_key_structure
+                                                            TO &lt;lfs_key_value&gt;.
+          IF sy-subrc NE 0.
+            &quot; Erreur assignation // Ne devrait pas se produire
+            &quot;&quot;  --&gt; Passe à l&apos;itération suivante
+            CONTINUE.
+
+          ENDIF.
+
+          &quot; Ajout Clef / Valeur
+          APPEND VALUE #(
+            key   = &lt;lfs_s_component&gt;-name
+            value = &lt;lfs_key_value&gt;
+          ) TO lt_key_value.
+
+        ENDLOOP.
+
+      CATCH cx_root.
+        &quot; Erreur récupération description
+        &quot;&quot;  --&gt; Arrêt du traitement
+        RETURN.
+
+    ENDTRY.
+
+  ENDIF.
+
+  &quot; -----------------------------------------------------------
+  &quot; Préparation des Clefs statiques
+  &quot; -----------------------------------------------------------
+
+  &quot; Initialisation des Clefs / Valeur Statiques
+  LOOP AT lt_key_value ASSIGNING FIELD-SYMBOL(&lt;lfs_s_key_value&gt;).
+
+    &quot; Incrémenation Numéro de Clef
+    ADD 1 TO lv_key_index.
+
+    &quot; Pointe sur la variable du Nom de la Clef correspondante
+    lv_variable = |{ lc_key_field_var_name }{ lv_key_index }|.
+    ASSIGN (lv_variable) TO &lt;lfs_key_field&gt;.
+    IF sy-subrc NE 0.
+      &quot; Impossible d&apos;atteindre la variable
+      &quot;&quot;  --&gt;  Arrêt du traitement
+      RETURN.
+
+    ELSE.
+      &quot; Pointeur initialisé
+      &quot;&quot;  --&gt; Initialisation Nom de la Clef correspondante
+      &lt;lfs_key_field&gt; = &lt;lfs_s_key_value&gt;-key.
+
+    ENDIF.
+
+    &quot; Pointe sur la variable de la Valeur de la Clef correspondante
+    lv_variable = |{ lc_key_value_var_name }{ lv_key_index }|.
+    ASSIGN (lv_variable) TO &lt;lfs_key_value&gt;.
+    IF sy-subrc NE 0.
+      &quot; Impossible d&apos;atteindre la variable
+      &quot;&quot;  --&gt;  Arrêt du traitement
+      RETURN.
+
+    ELSE.
+      &quot; Pointeur initialisé
+      &quot;&quot;  --&gt; Initialisation Valeur de la Clef correspondante
+      &lt;lfs_key_value&gt; = &lt;lfs_s_key_value&gt;-value.
+
+    ENDIF.
+
+    UNASSIGN : &lt;lfs_key_field&gt;, &lt;lfs_key_value&gt;.
+
+  ENDLOOP.
+
+  &quot; -----------------------------------------------------------
+  &quot; Recherche dans la table
+  &quot; -----------------------------------------------------------
+
+  &quot; Recherche dans la table avec toutes les Clefs valorisées
+  READ TABLE it_internal_table WITH KEY (lv_key_field_01) = lv_key_value_01
+                                        (lv_key_field_02) = lv_key_value_02
+                                        (lv_key_field_03) = lv_key_value_03
+                                        (lv_key_field_04) = lv_key_value_04
+                                        (lv_key_field_05) = lv_key_value_05
+                                        (lv_key_field_06) = lv_key_value_06
+                                        (lv_key_field_07) = lv_key_value_07
+                                        (lv_key_field_08) = lv_key_value_08
+                                        (lv_key_field_09) = lv_key_value_09
+                                        (lv_key_field_10) = lv_key_value_10
+                                        (lv_key_field_11) = lv_key_value_11
+                                        (lv_key_field_12) = lv_key_value_12
+                                        (lv_key_field_13) = lv_key_value_13
+                                        (lv_key_field_14) = lv_key_value_14
+                                        (lv_key_field_15) = lv_key_value_15
+                                        (lv_key_field_16) = lv_key_value_16
+                                        (lv_key_field_17) = lv_key_value_17
+                                        (lv_key_field_18) = lv_key_value_18
+                                        (lv_key_field_19) = lv_key_value_19
+                                        (lv_key_field_20) = lv_key_value_20
+                              ASSIGNING &lt;lfs_s_internal_table&gt;.
+  IF sy-subrc EQ 0.
+    &quot; Correspondance trouvée
+    &quot;&quot;  --&gt; Retourne la position
+    rv_tabix = sy-tabix.
+
+    IF es_result IS SUPPLIED.
+      &quot; On doit retourné les données
+      &quot;&quot;  --&gt; Génération structure de résultat
+      CREATE DATA es_result LIKE LINE OF it_internal_table.
+      IF sy-subrc EQ 0.
+        &quot; Initialisation pointeur sur la donnée
+        ASSIGN es_result-&gt;* TO &lt;lfs_s_result&gt;.
+
+      ENDIF.
+      IF sy-subrc NE 0.
+        &quot; Erreur création donnée ou assignation pointeur
+        &quot;&quot;  --&gt; Arrêt du traitement
+        CLEAR : es_result.
+        RETURN.
+
+      ENDIF.
+
+      &quot;&quot;  --&gt; Retourne les données
+      MOVE-CORRESPONDING &lt;lfs_s_internal_table&gt; TO &lt;lfs_s_result&gt;.
+
+    ENDIF.
+
+  ENDIF.
+
+ENDMETHOD.</source>
+  </method>
+ </CLAS>
+</nugget>

@@ -91,24 +91,24 @@ START-OF-SELECTION.
     lv_component_number = lines( s_comp[] ).
 
     SELECT DISTINCT tabname FROM dd03l
-                      INTO TABLE lt_dd03l
-                           WHERE tabname   IN s_tab[]
-                             AND fieldname IN s_comp[]
-                             AND position  LE lv_component_number.
+                           WHERE tabname   IN @s_tab[]
+                             AND fieldname IN @s_comp[]
+                             AND position  LE @lv_component_number
+                      INTO TABLE @lt_dd03l.
 
   ELSE.
     " Mode "tolérant"
     SELECT DISTINCT tabname FROM dd03l
-                      INTO TABLE lt_dd03l
-                           WHERE tabname   IN s_tab[]
-                             AND fieldname IN s_comp[].
+                           WHERE tabname   IN @s_tab[]
+                             AND fieldname IN @s_comp[]
+                      INTO TABLE @lt_dd03l.
 
   ENDIF.
   IF sy-subrc EQ 0.
-    SELECT tabname fieldname FROM dd03l
-                       INTO TABLE lt_dd03l
-               FOR ALL ENTRIES IN lt_dd03l
-                            WHERE tabname EQ lt_dd03l-tabname.
+    SELECT tabname, fieldname FROM dd03l
+                FOR ALL ENTRIES IN @lt_dd03l
+                             WHERE tabname EQ @lt_dd03l-tabname
+                        INTO TABLE @lt_dd03l.
 
   ENDIF.
   IF sy-subrc NE 0.
@@ -127,27 +127,42 @@ START-OF-SELECTION.
 
     CLEAR : lv_count.
 
+    " Récupération position première itération
     READ TABLE lt_dd03l WITH KEY tabname = <lfs_s_tabname>-tabname
                     TRANSPORTING NO FIELDS BINARY SEARCH.
     IF sy-subrc NE 0.
+      " Aucune correspondance
+      ""  --> Suppression de l'entrée
+      DELETE lt_tabname_line USING KEY loop_key.
+
+      ""  --> Passe à l'itération suivante
       CONTINUE.
 
     ENDIF.
 
+    " Parcours chaque champ de la structure
     LOOP AT lt_dd03l ASSIGNING FIELD-SYMBOL(<lfs_s_dd03l>)
                           FROM sy-tabix.
 
       IF <lfs_s_dd03l>-tabname NE <lfs_s_tabname>-tabname.
+        " On change de structure
+        ""  --> Arrêt de la boucle
         EXIT.
 
       ENDIF.
 
       IF <lfs_s_dd03l>-fieldname IN s_comp[].
+        " Champ présent dans la liste
+        ""  --> Initialisation flag éligible
         lv_eligible = abap_true.
         ADD 1 TO lv_count.
 
       ELSE.
+        " Champ non présent
+        ""  --> Initialisation indicateur flag non éligible
         lv_eligible = abap_false.
+
+        ""  --> Arrêt de la boucle
         EXIT.
 
       ENDIF.
@@ -156,11 +171,42 @@ START-OF-SELECTION.
 
     IF  lv_eligible EQ abap_true
     AND lv_count    EQ lv_component_number.
-      WRITE : <lfs_s_tabname>-tabname, /.
+      " Structure / Table eligible
+      ""  --> Conserve l'entrée
 
     ELSE.
-      DELETE lt_dd03l WHERE tabname EQ <lfs_s_tabname>-tabname.
+      " Structure / Table ne correspond pas intégralement
+      IF p_strict EQ abap_true.
+        " Mode Strict
+        ""  --> Supprime l'entrée
+        DELETE lt_dd03l WHERE tabname EQ <lfs_s_tabname>-tabname.
+        DELETE lt_tabname_line USING KEY loop_key.
+        CONTINUE.
+
+      ENDIF.
 
     ENDIF.
 
   ENDLOOP.
+
+  " -----------------------------------------------------------
+  " Affichage du résultat
+  " -----------------------------------------------------------
+
+  TRY.
+      " Génération instance SALV
+      cl_salv_table=>factory(
+        EXPORTING
+          list_display   = sy-batch
+        IMPORTING
+          r_salv_table   = DATA(lo_salv_table)
+        CHANGING
+          t_table        = lt_tabname_line
+      ).
+
+      " Affichage du résultat
+      lo_salv_table->display( ).
+
+    CATCH cx_salv_msg.
+
+  ENDTRY.
